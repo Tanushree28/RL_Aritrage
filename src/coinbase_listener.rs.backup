@@ -1,0 +1,145 @@
+use chrono::{TimeDelta, Utc};
+use futures::{SinkExt, StreamExt};
+use std::sync::{Arc, Mutex};
+use tokio::time::Duration;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+use crate::model::{AppState, AssetConfig, IndexState};
+
+// Coinbase Advanced Trade WebSocket
+const WS_URL: &str = "wss://advanced-trade-ws.coinbase.com";
+const WINDOW_SECS: i64 = 60;
+
+/// Entry point. Connects to Coinbase Advanced Trade, authenticates,
+/// consumes ticker messages, and reconnects on failure.
+pub async fn run(state: Arc<Mutex<AppState>>, config: Arc<AssetConfig>) -> anyhow::Result<()> {
+    eprintln!("[price_feed] task started (Coinbase WS {})", config.coinbase_pair);
+
+    let mut backoff_secs: u64 = 1;
+
+    // Load credentials from environment
+    let api_key = std::env::var("COINBASE_API_KEY_NAME").map_err(|_| anyhow::anyhow!("Missing COINBASE_API_KEY_NAME"))?;
+    let api_secret = std::env::var("COINBASE_PRIVATE_KEY").map_err(|_| anyhow::anyhow!("Missing COINBASE_PRIVATE_KEY"))?;
+
+    loop {
+        match connect_and_listen(&state, &config.coinbase_pair, &api_key, &api_secret).await {
+            Ok(()) => {
+                eprintln!("[price_feed] stream ended, reconnecting...");
+                backoff_secs = 1;
+            }
+            Err(e) => {
+                eprintln!("[price_feed] error: {e} — retrying in {backoff_secs}s");
+                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                backoff_secs = (backoff_secs * 2).min(60);
+            }
+        }
+
+        if state.lock().unwrap().shutdown {
+            eprintln!("[price_feed] shutdown requested, exiting");
+            return Ok(());
+        }
+    }
+}
+
+async fn connect_and_listen(
+    state: &Arc<Mutex<AppState>>,
+    product_id: &str,
+    api_key: &str,
+    api_secret: &str
+) -> anyhow::Result<()> {
+    let (mut stream, _) = connect_async(WS_URL).await?;
+    eprintln!("[price_feed] connected to {}", WS_URL);
+
+    // Prepare signature for subscription
+    let timestamp = Utc::now().timestamp().to_string();
+    let channel = "ticker";
+    let message = format!("{}{}{}", timestamp, channel, product_id);
+    
+    let mut mac = Hmac::<Sha256>::new_from_slice(api_secret.as_bytes())
+        .map_err(|_| anyhow::anyhow!("Invalid HMAC key"))?;
+    mac.update(message.as_bytes());
+    let signature = hex::encode(mac.finalize().into_bytes());
+
+    let subscribe = serde_json::json!({
+        "type": "subscribe",
+        "product_ids": [product_id],
+        "channel": channel,
+        "api_key": api_key,
+        "timestamp": timestamp,
+        "signature": signature,
+    });
+
+    stream.send(Message::Text(subscribe.to_string())).await?;
+
+    while let Some(msg) = stream.next().await {
+        let msg = msg?;
+        let text = match msg {
+            Message::Text(t) => t,
+            Message::Close(_) => break,
+            _ => continue,
+        };
+
+        let value: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Check for error responses
+        if let Some("error") = value.get("type").and_then(|t| t.as_str()) {
+             let reason = value.get("message").and_then(|m| m.as_str()).unwrap_or("unknown");
+             return Err(anyhow::anyhow!("Coinbase WS Error: {}", reason));
+        }
+
+        // Ticker channel updates
+        if value.get("channel").and_then(|c| c.as_str()) == Some("ticker") {
+            // "events" -> [ { "tickers": [ { "price": "...", ... } ] } ]
+            if let Some(events) = value.get("events").and_then(|e| e.as_array()) {
+                for event in events {
+                     if let Some(tickers) = event.get("tickers").and_then(|t| t.as_array()) {
+                        for ticker in tickers {
+                            if let Some(price_str) = ticker.get("price").and_then(|p| p.as_str()) {
+                                if let Ok(price) = price_str.parse::<f64>() {
+                                    update_state(state, price);
+                                }
+                            }
+                        }
+                     }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn update_state(state: &Arc<Mutex<AppState>>, price: f64) {
+    let now = Utc::now();
+    let mut app = state.lock().unwrap();
+
+    app.price_window.push_back((now, price));
+
+    // Evict entries outside the settlement window.
+    let cutoff = now - TimeDelta::seconds(WINDOW_SECS);
+    while let Some(&(ts, _)) = app.price_window.front() {
+        if ts < cutoff {
+            app.price_window.pop_front();
+        } else {
+            break;
+        }
+    }
+
+    // Rolling average over the window.
+    let rolling_avg = {
+        let sum: f64 = app.price_window.iter().map(|(_, p)| p).sum();
+        sum / app.price_window.len() as f64
+    };
+
+    app.coinbase = Some(IndexState {
+        current_price:   price,
+        rolling_avg_60s: rolling_avg,
+        ts:              now,
+    });
+}

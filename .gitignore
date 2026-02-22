@@ -1,0 +1,10 @@
+/target
+.env*
+data/
+logs/
+server_logs/
+model/
+__pycache__/
+*.log
+.DS_Store
+analysis_results*.txt

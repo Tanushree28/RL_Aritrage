@@ -1,0 +1,15 @@
+{
+  "evaluation": {
+    "total_pnl": 250.5,
+    "win_rate": 0.62,
+    "num_trades": 15,
+    "sharpe_ratio": 1.8
+  },
+  "n_episodes": 50,
+  "training_duration_sec": 120,
+  "version": "v20260206_222103",
+  "timestamp": "20260206_222103",
+  "created_at": "2026-02-06T22:21:03.640580",
+  "q_states": 2,
+  "epsilon": 1.0
+}

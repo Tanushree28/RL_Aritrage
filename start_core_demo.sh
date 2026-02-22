@@ -1,0 +1,25 @@
+#!/bin/bash
+export KALSHI_ENV=demo
+export KALSHI_ASSET=btc
+export KALSHI_API_KEY_ID=774b92ee-6998-4dbc-b454-f16bd5f692d5
+export KALSHI_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAxEAahIbpsP6owICea2TBg96b7ySLzw0a5yBcpcUZeaE7tGGd\nOHf2ugt0yA3XnPCjdnDDlDqGQKCn3dLDMCl4dJF91Fyt8WxVhVrgyyI+VA9cLAd6\nSXDP0xmKbOcyXYL76tbLh4lm75H58AL7txnlS7XqhB0JRTvBEz95lQ2BI9Fg67rQ\nCNXEu2w4sb22eS3+tp+4EbKr+cYgMAY5EbnOXOfkcny92gQ+NXpzpXG6oF1I/szb\n5qnzUdQhnu8Ex5X8Ep5mx59eA0o96NXjykgRoiSQDwwziwvnyMyMwojjq6KSeYyT\nD9AhwPaLsK9r3my3o1xPNPcSv7ai3AlrDPJ9kQIDAQABAoIBAB6UDG205cm9zEZ+\nY/DA2MQ21d4ruBsRZC06JiVwMhl5DWf8Q7aOPqPbcB1RxtQ9zIKCbH72pX+BaNaP\n5fjlpU6ocs45iKLS6fpm4BrWoZaQdCCqI5w41zEBzEdOuNLIO39qa3kZaDAQ8zw6\nAsWTY95poHpoWc7vUhSxMb0PRx1w1nPYpQp9Jl+nGrkAU9CbuSlX2XJAIDV15DF/\nX+HMJI9/o2en71CB9iC0p9pSnWFNZjjeYtHoAqNPGUmD2R2kfgqjicK/PVzIZ5ay\n/4ZznsPj4EypucN7nnnh1Kv4vEHQZ9a9g7WqlsZ1JFJjHr1kbWzkCYHoQKj5PlYn\nZczPKrcCgYEA/0L3egZzkjore5mRL9LM9b5syGfmXEvCXGckScCVx37O3C6aYBxh\nm6uazHgrCYYjTktYQaRFVR/qNzqpBRHH/nB4HsUT5RAQKjkv2296Pmdst18/251v\nwMY7njMQ2BWPHKGLTYv2VKc9d8ZMCun4JbHfCdSXmbYb4oO4bpbF01MCgYEAxNFv\nsYkkMM4a1hYauyXLkycHbtCN3QvJIqBeO9nFN2yW4o2H3XKYM9a6/+MFMSLH4tpZ\nOL498lvWRWEshlKTZehn1CfF/r82gfcobWy831zlsb1l32MwreXduCBZd4kSwSmJ\nGdBbM0Vr8ZG6+1v9RIHhMGtlqdFQD4sAZooH0wsCgYEAxy238a2LDLT7LQzdL1Xr\nvG2EcLQyGh67YGLS/AGcXfhi7YgnyYsb1t6Ggbnayymx7uv3x/CocQ3gMoxBSsVf\nKvkTod7h8UEhe/D3mOBZoMwPFt7p8zHb+64y4vSx1gqsiwi6rB3kbpW47vb6ayG6\nEZ/Di+YpDTX+eDeT+CcJ4iUCgYB/jaAOdeuveZNo1bCDQy5Y8r1dcunNrPqwZzBL\nJ4oprkVnFAROXxsG1Y4hkhZmTr0uZwXVwW1SKXSHSD/b2Z5PODw6AYDO5UtFFVHt\nAMCzHXh7JVzlVlpRCR0VXFm/H2W5K9r/kMnaQ45+Y0zD5E0SXf38LE4ZrV5uhE5B\nJgmGGwKBgFz0fmxcYmQAGpCpUwp+bzmEe6rIU0hDzXCsf/ftCEymdAz952lNtjCU\nVPVa2hAfJdwgJKTFW496ALXbsV71Taf7ru154EY71Ejhz+a2jQIaSGy5xM0j8eAB\nbWVrEuo1+vMiKiIwIYs9p7TifIVfvvmLG+AktKrrpdIsMT5SNCDo\n-----END RSA PRIVATE KEY-----"
+export TELEGRAM_BOT_TOKEN=8577505482:AAHipsZiLCH7AqJhvA2CS53DdDl2OnqqB7M
+export TELEGRAM_CHAT_ID=7867417061
+export COINBASE_API_KEY_NAME=I3bEFWm1Vym439ADkZDDhjPNlkoy30nE
+export COINBASE_PRIVATE_KEY=d102ebbb-6a03-4562-80b6-4d9b008d4706
+
+# Kill old instances
+pkill -f "kalshi-arb" || true
+
+# Check dashboard
+if lsof -i :8501 > /dev/null; then
+    echo "Dashboard running."
+else
+    nohup streamlit run monitoring/dashboard.py > logs/dashboard.log 2>&1 &
+fi
+
+
+echo "Starting Core ML Bot (BTC) with exported keys..."
+nohup ./target/release/kalshi-arb-btc > logs/core-btc-demo.log 2>&1 &
+
+

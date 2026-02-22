@@ -1,0 +1,28 @@
+{
+  "evaluation": {
+    "total_pnl": -11194.699999999993,
+    "win_rate": 0.0,
+    "num_trades": 112,
+    "wins": 0,
+    "losses": 112,
+    "sharpe_ratio": -1179.5663596528448,
+    "num_markets": 200
+  },
+  "current_model_eval": {
+    "total_pnl": 17593.300000000003,
+    "win_rate": 0.5357142857142857,
+    "num_trades": 112,
+    "wins": 60,
+    "losses": 52,
+    "sharpe_ratio": 0.6151114644322132,
+    "num_markets": 200
+  },
+  "n_episodes": 30,
+  "n_samples_per_episode": 500,
+  "training_timestamp": 1770755113.378174,
+  "version": "v20260210_202513",
+  "timestamp": "20260210_202513",
+  "created_at": "2026-02-10T20:25:13.382052",
+  "q_states": 321,
+  "epsilon": 0.11095505600824203
+}
