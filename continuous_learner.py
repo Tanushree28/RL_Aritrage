@@ -41,13 +41,29 @@ except ImportError:
 
 def migrate_state(state_tuple):
     """
-    Migrate old 5D states to new 6D format by adding momentum_bucket=1 (neutral).
-    New 6D format: (dist, time, price, direction, spread, momentum)
+    Migrate stored states to current 5D format: (dist, time, price, direction, momentum).
+
+    Handles:
+    - 5D old format (dist, time, price, dir, spread): add momentum=1, drop spread
+    - 6D format (dist, time, price, dir, spread, momentum): drop spread (index 4)
+    - 7D format (dist, time, price, dir, spread, momentum, time_of_day): drop spread + tod
+    - 5D current format (dist, time, price, dir, momentum): pass through
     """
-    if len(state_tuple) == 5:
-        # Old format: add neutral momentum (1)
-        return state_tuple + (1,)
-    return state_tuple  # Already 6D or different format
+    if len(state_tuple) == 7:
+        # Rust 7D: (dist, time, price, dir, spread, momentum, time_of_day)
+        # Drop spread (idx 4) and time_of_day (idx 6)
+        return (state_tuple[0], state_tuple[1], state_tuple[2], state_tuple[3], state_tuple[5])
+    elif len(state_tuple) == 6:
+        # Old 6D: (dist, time, price, dir, spread, momentum)
+        # Drop spread (idx 4)
+        return (state_tuple[0], state_tuple[1], state_tuple[2], state_tuple[3], state_tuple[5])
+    elif len(state_tuple) == 5:
+        # Could be old 5D (no momentum) or current 5D (with momentum)
+        # Heuristic: if 5th element is 0 or 1, it's likely spread (old format)
+        # Current momentum is 0, 1, or 2. Old spread is 0 or 1.
+        # We can't perfectly distinguish, so assume current 5D format
+        return state_tuple
+    return state_tuple
 
 
 class ContinuousLearner:
@@ -128,18 +144,19 @@ class ContinuousLearner:
                 self.agent = QLearningAgent()
                 return False
 
-    def train_episode(self, n_samples: int = 500) -> float:
+    def train_episode(self, n_samples: int = 500, recent_hours: int = 48) -> float:
         """
         Train one episode using prioritized experience replay.
 
         Args:
             n_samples: Number of experiences to sample
+            recent_hours: Time window for 'recent' data. Use 99999 for all-time historical.
 
         Returns:
             Average TD error for the episode
         """
         # Sample experiences with prioritization
-        samples = self.buffer.sample_prioritized(n_samples=n_samples)
+        samples = self.buffer.sample_prioritized(n_samples=n_samples, recent_hours=recent_hours)
 
         if len(samples) == 0:
             print("[ContinuousLearner] No experiences available for training")
@@ -569,7 +586,8 @@ class ContinuousLearner:
     def train_and_evaluate(
         self,
         n_episodes: int = 30,
-        n_samples_per_episode: int = 500
+        n_samples_per_episode: int = 500,
+        recent_hours: int = 48
     ) -> bool:
         """
         Full training cycle: train → evaluate → promote.
@@ -577,6 +595,7 @@ class ContinuousLearner:
         Args:
             n_episodes: Number of training episodes
             n_samples_per_episode: Experiences to sample per episode
+            recent_hours: Time window for sampling. 99999 = use all historical data.
 
         Returns:
             True if model was promoted, False otherwise
@@ -632,7 +651,7 @@ class ContinuousLearner:
                 avg_metric = self.train_episode_dqn(batch_size=64)
                 metric_name = "Loss"
             elif use_experience_replay:
-                avg_metric = self.train_episode(n_samples=n_samples_per_episode)
+                avg_metric = self.train_episode(n_samples=n_samples_per_episode, recent_hours=recent_hours)
                 metric_name = "Avg TD Error"
             else:
                 avg_metric = self.train_episode_from_csv()
@@ -688,6 +707,14 @@ class ContinuousLearner:
             # Promote to production
             self.registry.promote_to_production(version_name)
 
+            # Auto-copy to model/{asset}/rl_policy.json so dashboard updates immediately
+            dashboard_policy_path = pathlib.Path(f"model/{self.asset}/rl_policy.json")
+            dashboard_policy_path.parent.mkdir(parents=True, exist_ok=True)
+            promoted_policy = pathlib.Path(version_path) / "rl_policy.json"
+            if promoted_policy.exists():
+                shutil.copy(promoted_policy, dashboard_policy_path)
+                print(f"[Dashboard] Auto-updated model/{self.asset}/rl_policy.json")
+
             print(f"\n{'=' * 80}")
             print(f"✅ PROMOTED {version_name} TO PRODUCTION")
             print(f"{'=' * 80}")
@@ -726,7 +753,7 @@ Examples:
         "--asset",
         type=str,
         default="btc",
-        choices=["btc", "eth", "sol"],
+        choices=["btc", "eth", "sol", "xrp"],
         help="Asset to train on (default: btc)"
     )
 
@@ -763,6 +790,12 @@ Examples:
         help="Use Deep Q-Network instead of tabular Q-learning"
     )
 
+    parser.add_argument(
+        "--historical",
+        action="store_true",
+        help="Train on ALL historical data (not just last 48h). Use with --episodes and --samples."
+    )
+
     args = parser.parse_args()
 
     # Import pathlib here to avoid circular import
@@ -793,7 +826,8 @@ Examples:
             try:
                 learner.train_and_evaluate(
                     n_episodes=args.episodes,
-                    n_samples_per_episode=args.samples
+                    n_samples_per_episode=args.samples,
+                    recent_hours=99999 if args.historical else 48
                 )
             except KeyboardInterrupt:
                 print("\n\nReceived interrupt signal, shutting down...")
@@ -817,7 +851,8 @@ Examples:
         # Single training run
         success = learner.train_and_evaluate(
             n_episodes=args.episodes,
-            n_samples_per_episode=args.samples
+            n_samples_per_episode=args.samples,
+            recent_hours=99999 if args.historical else 48
         )
 
         sys.exit(0 if success else 1)

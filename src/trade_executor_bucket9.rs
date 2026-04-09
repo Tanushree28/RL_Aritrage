@@ -54,8 +54,9 @@ const MAX_CONTRACTS_PER_POSITION: u64 = 1000;
 // ============================================================
 
 const REST_PATH: &str = "/trade-api/v2/portfolio/orders";
-const BASE_URL_PROD: &str = "https://api.elections.kalshi.com";
-const BASE_URL_DEMO: &str = "https://demo-api.kalshi.co";
+const WS_URL_PROD: &str = "wss://api.elections.kalshi.com/trade-api/ws/v2";
+const WS_URL_DEMO: &str = "wss://demo-api.kalshi.com/trade-api/ws/v2";
+const WS_PATH: &str = "/trade-api/ws/v2";
 
 /// Kalshi taker fee on an order of `count` contracts at `price` (0–1).
 fn order_fee(count: u64, price: f64) -> f64 {
@@ -150,45 +151,46 @@ pub async fn run(state: Arc<Mutex<AppState>>, config: Arc<AssetConfig>) -> anyho
             return Ok(());
         }
 
-        // Snapshot shared state
-        let (kalshi, coinbase, cb_price, binance_price) = {
+        // Snapshot shared state — use resilient price aggregation
+        let (kalshi, coinbase, spot, alive_sources) = {
             let app = state.lock().unwrap();
-            (
-                app.kalshi.clone(), 
-                app.coinbase.clone(), 
-                app.coinbase_price, 
-                app.binance_price
-            )
+            let kalshi = app.kalshi.clone();
+            let index = app.best_available_index();
+            let price = app.best_available_price();
+            let alive = app.alive_source_count();
+            (kalshi, index, price, alive)
         };
 
-        let (kalshi, coinbase) = match (kalshi, coinbase) {
-            (Some(k), Some(c)) => (k, c),
-            _ => continue, // wait for at least Kalshi + Kraken
+        // Kalshi is always required (it's our market data, not a price source)
+        let kalshi = match kalshi {
+            Some(k) => k,
+            None => continue,
         };
 
-        // Hybrid Price: Average of all available sources
-        let mut sum = 0.0;
-        let mut count = 0.0;
-
-        // Source 1: Kraken (primary WebSocket)
-        if coinbase.current_price > 0.0 {
-            sum += coinbase.current_price;
-            count += 1.0;
-        }
-        // Source 2: Coinbase (REST)
-        if let Some(p) = cb_price {
-             if p > 0.0 { sum += p; count += 1.0; }
-        }
-        // Source 3: Binance/Bybit (WebSocket)
-        if let Some(p) = binance_price {
-             if p > 0.0 { sum += p; count += 1.0; }
-        }
-
-        let spot = if count > 0.0 {
-            sum / count
-        } else {
-            coinbase.current_price // Fallback if others fail
+        // Need at least 1 price source alive
+        let coinbase = match coinbase {
+            Some(c) => c,
+            None => {
+                eprintln!("[BUCKET9] ⚠ All price sources down, waiting...");
+                continue;
+            }
         };
+        let spot = spot.unwrap_or(coinbase.current_price);
+
+        // Log data source health periodically (every ~60 ticks)
+        {
+            let app = state.lock().unwrap();
+            let kr_status = if app.is_kraken_alive()   { "✅" } else { "❌" };
+            let cb_status = if app.is_coinbase_alive() { "✅" } else { "❌" };
+            let bs_status = if app.is_bitstamp_alive() { "✅" } else { "❌" };
+            // Only log when sources change or periodically
+            if alive_sources < 3 {
+                eprintln!(
+                    "[BUCKET9] Sources: Kraken={} Coinbase={} Bitstamp={} ({}/3 alive) | spot=${:.2}",
+                    kr_status, cb_status, bs_status, alive_sources, spot
+                );
+            }
+        }
 
         // Settle expired paper positions
         if paper_mode {
@@ -359,6 +361,15 @@ pub async fn run(state: Arc<Mutex<AppState>>, config: Arc<AssetConfig>) -> anyho
 
                 // Log how many positions we have (for monitoring)
                 let same_side_count = ticker_positions.len();
+                
+                // CRITICAL FIX: Cap Bucket 9 at 3 positions per market to prevent total wipeout
+                // on sudden market reversals (e.g. losing 60x bets instantly).
+                if same_side_count >= 3 {
+                    eprintln!("[BUCKET9] {} ❌ Blocked {} - MAX positions (3) reached",
+                              kalshi.ticker, side.to_uppercase());
+                    continue;
+                }
+                
                 if same_side_count > 0 {
                     eprintln!("[BUCKET9] {} Adding position #{} (same side: {})",
                               kalshi.ticker, same_side_count + 1, side.to_uppercase());
@@ -474,11 +485,11 @@ pub async fn run(state: Arc<Mutex<AppState>>, config: Arc<AssetConfig>) -> anyho
                 }
                 Err(e) => {
                     let err_str = e.to_string();
-                    if base_url == BASE_URL_PROD
+                    if base_url == "https://api.elections.kalshi.com" // Check against the modern prod URL
                         && (err_str.contains("lookup") || err_str.contains("connect"))
                     {
                         eprintln!("[BUCKET9] production unreachable, falling back to demo");
-                        base_url = BASE_URL_DEMO.to_string();
+                        base_url = "https://demo-api.kalshi.com".to_string(); // Fallback to modern demo URL
                     }
                     eprintln!("[BUCKET9] order failed: {e}");
                 }
@@ -520,13 +531,8 @@ async fn settle_expired(
     let mut settled_indices: Vec<(usize, bool)> = Vec::new();
 
     for (idx, ticker) in expired_tickers.iter().rev() {
-        // Base URL logic needed here. Settle expired uses REST API.
-        // For simplicity, we can default to config based URL or pass it in.
-        // Since we don't have config here, let's assume PROD unless we change the signature again.
-        // But wait, we *need* it to work on DEMO.
-        // Best approach: Add base_url to settle_expired signature.
         let is_demo = std::env::var("KALSHI_ENV").unwrap_or_default().to_lowercase() == "demo";
-         let base_url = if is_demo { "https://demo-api.kalshi.co" } else { "https://api.elections.kalshi.com" };
+        let base_url = if is_demo { "https://demo-api.kalshi.com" } else { "https://api.elections.kalshi.com" };
 
         match kalshi_listener::fetch_market_result(client, api_key_id, signing_key, ticker, base_url).await {
             Some((status, result)) => {
@@ -589,12 +595,15 @@ async fn settle_expired(
         app.pending_trades.push_back(crate::model::TradeRecord {
             opened_at:   pos.opened_at,
             closed_at:   chrono::Utc::now(),
+            asset:       String::new(),
             strike:      pos.strike,
             side:        pos.side.to_uppercase(),
             entry_price: pos.entry_price,
             exit_price:  exit_value,
             pnl,
             roi:         roi_pct,
+            settlement:  String::new(),
+            fair_value:  pos.model_prob,
         });
 
         // Notify Telegram
@@ -637,19 +646,21 @@ async fn place_order(
     let signature = signing_key.sign_with_rng(&mut OsRng, message.as_bytes());
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_vec());
 
-    let price_cents = (entry_price * 100.0).round() as i64;
-    // ... body construction ...
+    // Kalshi now requires fixed-point dollar strings (e.g., "0.12") instead of integer cents.
+    let price_dollars = format!("{:.2}", entry_price);
+
     let mut body = serde_json::json!({
-        "ticker": kalshi.ticker,
-        "action": "buy",
-        "side": side,
-        "count": 1,
-        "type": "limit",
+        "ticker":          kalshi.ticker,
+        "action":          "buy",
+        "side":            side,
+        "count_fp":        "1", // count is now fixed-point string
+        "type":            "limit",
         "client_order_id": client_order_id(),
     });
 
-    let price_key = if side == "yes" { "yes_price" } else { "no_price" };
-    body[price_key] = serde_json::json!(price_cents);
+    // Price field name is side-specific and now requires the _dollars suffix.
+    let price_key = if side == "yes" { "yes_price_dollars" } else { "no_price_dollars" };
+    body[price_key] = serde_json::json!(price_dollars);
 
     let url = format!("{}{}", base_url, path);
 

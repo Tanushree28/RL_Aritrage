@@ -147,8 +147,8 @@ fn get_rl_action(policy: &RlPolicyData, dist_pct: f64, secs: i64, price: f64, is
     // 1. Discretize match Python logic exactly
     let state = discretize_rl_state(policy, dist_pct, secs, price, is_above, spread, momentum);
 
-    // 2. Lookup key "d,t,p,dir,sp,mom,tod"
-    let key = format!("{},{},{},{},{},{},{}", state.dist_bucket, state.time_bucket, state.price_bucket, state.direction, state.spread_bucket, state.momentum_bucket, state.time_of_day_bucket);
+    // 2. Lookup key "d,t,p,dir,mom" (5D — matches Python rl_strategy.py)
+    let key = format!("{},{},{},{},{}", state.dist_bucket, state.time_bucket, state.price_bucket, state.direction, state.momentum_bucket);
 
     if let Some(q_vals) = policy.q_table.get(&key) {
         // Argmax: 0=HOLD, 1=BUY_YES, 2=BUY_NO
@@ -715,16 +715,42 @@ pub async fn run(state: Arc<Mutex<AppState>>, config: Arc<AssetConfig>) -> anyho
             return Ok(());
         }
 
-        // --- Snapshot shared state --------------------------------------------
-        let (kalshi, coinbase, price_window) = {
+        // --- Snapshot shared state (resilient — works with any alive sources) ---
+        let (kalshi, coinbase, price_window, alive_sources) = {
             let app = state.lock().unwrap();
-            (app.kalshi.clone(), app.coinbase.clone(), app.price_window.clone())
+            let kalshi = app.kalshi.clone();
+            let index = app.best_available_index();
+            let pw = app.price_window.clone();
+            let alive = app.alive_source_count();
+            (kalshi, index, pw, alive)
         };
 
-        let (kalshi, coinbase) = match (kalshi, coinbase) {
-            (Some(k), Some(c)) => (k, c),
-            _ => continue, // wait for both feeds
+        // Kalshi feed is always required
+        let kalshi = match kalshi {
+            Some(k) => k,
+            None => continue,
         };
+
+        // Need at least 1 price source alive
+        let coinbase = match coinbase {
+            Some(c) => c,
+            None => {
+                eprintln!("[trade_executor] ⚠ All price sources down, waiting...");
+                continue;
+            }
+        };
+
+        // Log degraded mode when sources go down
+        if alive_sources < 3 {
+            let app = state.lock().unwrap();
+            let kr = if app.is_kraken_alive()   { "✅" } else { "❌" };
+            let cb = if app.is_coinbase_alive() { "✅" } else { "❌" };
+            let bs = if app.is_bitstamp_alive() { "✅" } else { "❌" };
+            eprintln!(
+                "[trade_executor] Sources: Kraken={} Coinbase={} Bitstamp={} ({}/3 alive)",
+                kr, cb, bs, alive_sources
+            );
+        }
 
         // --- Settle expired paper positions ------------------------------------
         if paper_mode {
@@ -1022,9 +1048,9 @@ pub async fn run(state: Arc<Mutex<AppState>>, config: Arc<AssetConfig>) -> anyho
         state.lock().unwrap().model_prob = Some(model_prob);
         last_kalshi_ts = Some(kalshi.ts);
 
-        // --- HARD FILTER: Block long-shot trades < $0.10 for ALL assets --------
-        // These trades have 0% win rate across all assets (SOL lost $489 on 8 trades today)
-        if entry_price < 0.10 {
+        // --- HARD FILTER: Block long-shot trades < $0.20 for ALL assets --------
+        // These trades have <5% win rate across all assets and just bleed capital
+        if entry_price < 0.20 {
             eprintln!(
                 "[LONGSHOT_FILTER] {} ❌ Blocked {} @ ${:.2} - extreme long-shot",
                 kalshi.ticker, side.to_uppercase(), entry_price
@@ -1364,12 +1390,15 @@ async fn settle_expired(
         app.pending_trades.push_back(TradeRecord {
             opened_at:   pos.opened_at,
             closed_at:   Utc::now(),
+            asset:       String::new(),
             strike:      pos.strike,
             side:        pos.side.to_uppercase(),
             entry_price: pos.entry_price,
             exit_price:  exit_value,
             pnl,
             roi:         roi_pct,
+            settlement:  String::new(),
+            fair_value:  pos.model_prob,
         });
 
         // Log experience for RL training (if RL state was captured at entry)
@@ -1655,21 +1684,21 @@ async fn place_order(
 
     let signature = sign_request(signing_key, timestamp_ms, "POST", REST_PATH);
 
-    // Kalshi prices are in whole cents (integer 1–99).
-    let price_cents = (entry_price * 100.0).round() as i64;
+    // Kalshi now requires fixed-point dollar strings (e.g., "0.12") instead of integer cents.
+    let price_dollars = format!("{:.2}", entry_price);
 
     let mut body = serde_json::json!({
         "ticker":          kalshi.ticker,
         "action":          "buy",
         "side":            side,
-        "count":           1,
+        "count_fp":        "1", // count is now fixed-point string
         "type":            "limit",
         "client_order_id": client_order_id(),
     });
 
-    // Price field name is side-specific.
-    let price_key = if side == "yes" { "yes_price" } else { "no_price" };
-    body[price_key] = serde_json::json!(price_cents);
+    // Price field name is side-specific and now requires the _dollars suffix.
+    let price_key = if side == "yes" { "yes_price_dollars" } else { "no_price_dollars" };
+    body[price_key] = serde_json::json!(price_dollars);
 
     let url = format!("{base_url}{REST_PATH}");
 

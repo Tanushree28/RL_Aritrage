@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 
-use crate::model::{AppState, AssetConfig, MarketState};
+use crate::model::{AppState, AssetConfig, MarketState, TradeRecord};
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -111,24 +111,15 @@ pub async fn run(state: Arc<Mutex<AppState>>, asset_config: Arc<AssetConfig>) ->
         eprintln!("[spread_compression] PAPER MODE — no real orders");
     }
 
-    if paper_mode {
-        eprintln!("[spread_compression] PAPER MODE — no real orders");
-    }
-
     let mut strategy = StrategyState::new(capital);
 
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-        // Get current market state from all 3 sources
-        let (kalshi, kraken_price, coinbase_price, binance_price) = {
+        // Get current market state — use resilient price aggregation
+        let (kalshi, spot_price_opt) = {
             let app = state.lock().unwrap();
-            (
-                app.kalshi.clone(),
-                app.coinbase.as_ref().map(|c| c.current_price),  // This is actually Kraken WebSocket
-                app.coinbase_price,                              // This is Coinbase REST
-                app.binance_price                                // This is Binance WebSocket
-            )
+            (app.kalshi.clone(), app.best_available_price())
         };
 
         let kalshi = match kalshi {
@@ -136,25 +127,10 @@ pub async fn run(state: Arc<Mutex<AppState>>, asset_config: Arc<AssetConfig>) ->
             None => continue,
         };
 
-        // Hybrid Price: Average of all available sources
-        let mut sum = 0.0;
-        let mut count = 0.0;
-
-        if let Some(p) = kraken_price {
-            if p > 0.0 { sum += p; count += 1.0; }
-        }
-        if let Some(p) = coinbase_price {
-             if p > 0.0 { sum += p; count += 1.0; }
-        }
-        if let Some(p) = binance_price {
-             if p > 0.0 { sum += p; count += 1.0; }
-        }
-
-        if count == 0.0 {
-            continue; // No valid price source
-        }
-
-        let spot_price = sum / count;
+        let spot_price = match spot_price_opt {
+            Some(p) => p,
+            None => continue, // No valid price source
+        };
 
         // Store for tracking
         strategy.last_seen.insert(kalshi.ticker.clone(), kalshi.clone());
@@ -319,6 +295,24 @@ async fn check_exits(
                 {
                     let mut app = state.lock().unwrap();
                     app.notifications.push_back(msg);
+                    // Write to DB via data_recorder
+                    let roi = if pos.entry_price > 0.0 { pnl / (pos.entry_price * pos.contracts as f64) } else { 0.0 };
+                    app.pending_trades.push_back(TradeRecord {
+                        opened_at:   pos.entry_time,
+                        closed_at:   Utc::now(),
+                        asset:       asset_config.name.clone(),
+                        strike:      pos.strike,
+                        side:        pos.side.clone(),
+                        entry_price: pos.entry_price,
+                        exit_price,
+                        pnl,
+                        roi,
+                        settlement:  if exit_price >= 0.5 { "YES".to_string() } else { "NO".to_string() },
+                        fair_value:  0.0,
+                    });
+                    app.session_pnl += pnl;
+                    if pnl > 0.0 { app.wins += 1; }
+                    app.total_trades += 1;
                 }
 
                 closed_indices.push(i);
@@ -358,6 +352,24 @@ async fn check_exits(
                 {
                     let mut app = state.lock().unwrap();
                     app.notifications.push_back(msg);
+                    // Write to DB via data_recorder
+                    let roi = if pos.entry_price > 0.0 { pnl / (pos.entry_price * pos.contracts as f64) } else { 0.0 };
+                    app.pending_trades.push_back(TradeRecord {
+                        opened_at:   pos.entry_time,
+                        closed_at:   Utc::now(),
+                        asset:       asset_config.name.clone(),
+                        strike:      pos.strike,
+                        side:        pos.side.clone(),
+                        entry_price: pos.entry_price,
+                        exit_price,
+                        pnl,
+                        roi,
+                        settlement:  "EARLY_EXIT".to_string(),
+                        fair_value:  0.0,
+                    });
+                    app.session_pnl += pnl;
+                    if pnl > 0.0 { app.wins += 1; }
+                    app.total_trades += 1;
                 }
 
                 closed_indices.push(i);

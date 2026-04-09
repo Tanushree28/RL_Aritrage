@@ -69,6 +69,15 @@ pub async fn run(state: Arc<Mutex<AppState>>, config: Arc<AssetConfig>) -> Resul
                                                 if let Some(p) = price {
                                                     if let Ok(mut s) = state.lock() {
                                                         s.binance_price = Some(p);
+                                                        let now = chrono::Utc::now();
+                                                        s.bitstamp_last_update = Some(now);
+
+                                                        // Also feed into price_window
+                                                        s.price_window.push_back((now, p));
+                                                        let cutoff = now - chrono::TimeDelta::seconds(60);
+                                                        while let Some(&(ts, _)) = s.price_window.front() {
+                                                            if ts < cutoff { s.price_window.pop_front(); } else { break; }
+                                                        }
                                                     }
                                                 }
                                             }

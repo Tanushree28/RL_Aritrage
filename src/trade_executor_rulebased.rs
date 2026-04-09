@@ -483,12 +483,15 @@ async fn settle_expired(
         app.pending_trades.push_back(TradeRecord {
             opened_at: pos.opened_at,
             closed_at: Utc::now(),
+            asset: String::new(),
             strike: pos.strike,
             side: pos.side.to_uppercase(),
             entry_price: pos.entry_price,
             exit_price: exit_value,
             pnl,
             roi: roi_pct,
+            settlement: String::new(),
+            fair_value: pos.model_prob,
         });
 
         let msg = telegram_reporter::format_trade_settlement(
@@ -529,19 +532,19 @@ async fn place_order(
         .as_millis() as u64;
 
     let signature = sign_request(signing_key, timestamp_ms, "POST", REST_PATH);
-    let price_cents = (entry_price * 100.0).round() as i64;
+    let price_dollars = format!("{:.2}", entry_price);
 
     let mut body = serde_json::json!({
-        "ticker": kalshi.ticker,
-        "action": "buy",
-        "side": side,
-        "count": 1,
-        "type": "limit",
+        "ticker":          kalshi.ticker,
+        "action":          "buy",
+        "side":            side,
+        "count_fp":        "1",
+        "type":            "limit",
         "client_order_id": client_order_id(),
     });
 
-    let price_key = if side == "yes" { "yes_price" } else { "no_price" };
-    body[price_key] = serde_json::json!(price_cents);
+    let price_key = if side == "yes" { "yes_price_dollars" } else { "no_price_dollars" };
+    body[price_key] = serde_json::json!(price_dollars);
 
     let url = format!("{base_url}{REST_PATH}");
 

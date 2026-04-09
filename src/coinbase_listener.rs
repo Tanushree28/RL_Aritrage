@@ -127,4 +127,5 @@ fn update_state(state: &Arc<Mutex<AppState>>, price: f64) {
         rolling_avg_60s: rolling_avg,
         ts:              now,
     });
+    app.kraken_last_update = Some(now);
 }

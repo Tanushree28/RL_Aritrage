@@ -36,15 +36,19 @@ from typing import Tuple, Optional, List
 
 # Q-Learning parameters
 LEARNING_RATE = 0.1
-DISCOUNT_FACTOR = 0.95
+DISCOUNT_FACTOR = 0.0  # Episodic: each 15-min market settles independently
 EPSILON_START = 1.0
 EPSILON_MIN = 0.01
 EPSILON_DECAY = 0.99  # Faster decay per episode
 EPSILON_WARMSTART = 0.15  # Low epsilon when fine-tuning existing model
+REWARD_CLIP = 50.0  # Clip rewards to ±$50 to prevent Q-value explosion
 
 # State discretization - MUST match Rust code in trade_executor.rs
-DISTANCE_BUCKETS = [0.1, 0.2, 0.3, 0.4, 0.5]  # percent (trades only when < 0.5%)
-TIME_BUCKETS = [30, 60, 90, 120, 150, 180, 210, 240, 270, 300]  # seconds (last 5 minutes only)
+DISTANCE_BUCKETS = [0.1, 0.2, 0.3, 0.4, 0.5]  # percent
+# Non-uniform time buckets: dense near expiry (10s), coarser further out (30s)
+# 14 thresholds (15 buckets, 0-14): 6 x 15 x 10 x 2 x 3 = 5,400 total states
+# 10s precision for 0-30s (most critical), 15s for 30-90s, 30s for 90-300s
+TIME_BUCKETS = [10, 20, 30, 45, 60, 75, 90, 120, 150, 180, 210, 240, 270, 300]
 PRICE_BUCKETS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]  # dollars
 
 # Actions
@@ -99,33 +103,35 @@ class QLearningAgent:
             self.load(load_from)
     
     def discretize_state(self, snapshot: MarketSnapshot) -> Tuple:
-        """Convert continuous state to discrete buckets. MUST match Rust code."""
-        
-        # Distance bucket
+        """Convert continuous state to discrete buckets. MUST match Rust code.
+
+        5-dimension state space (dropped spread), uniform 30s time buckets.
+        Total: 6 x 11 x 10 x 2 x 3 = 3,960 states
+        """
+
+        # Distance bucket (0-5)
         dist = snapshot.distance_pct
         dist_bucket = len([b for b in DISTANCE_BUCKETS if dist >= b])
-        
-        # Time bucket
+
+        # Time bucket (0-10) - Uniform 30-second intervals
         time_bucket = len([b for b in TIME_BUCKETS if snapshot.secs_left <= b])
-        
-        # Yes price bucket
+
+        # Yes price bucket (0-9)
         yes_bucket = len([b for b in PRICE_BUCKETS if snapshot.yes_ask >= b])
-        
-        # Above/below strike
+
+        # Above/below strike (0-1)
         direction = 1 if snapshot.is_above_strike else 0
-        
-        # Spread bucket (0=tight, 1=wide)
-        spread_bucket = 1 if snapshot.spread > 0.05 else 0
-        
-        # Momentum bucket: 0=down (<-0.1%), 1=neutral, 2=up (>+0.1%)
+
+        # Momentum bucket (0-2): 0=down (<-0.1%), 1=neutral, 2=up (>+0.1%)
         if snapshot.momentum < -0.1:
             momentum_bucket = 0
         elif snapshot.momentum > 0.1:
             momentum_bucket = 2
         else:
             momentum_bucket = 1
-        
-        return (dist_bucket, time_bucket, yes_bucket, direction, spread_bucket, momentum_bucket)
+
+        # State: (dist, time, price, dir, mom) -> 5,400 states
+        return (dist_bucket, time_bucket, yes_bucket, direction, momentum_bucket)
     
     def choose_action(self, state: Tuple, training: bool = True) -> int:
         """Epsilon-greedy action selection."""
@@ -134,12 +140,13 @@ class QLearningAgent:
         return np.argmax(self.q_table[state])
     
     def update(self, state: Tuple, action: int, reward: float, next_state: Tuple):
-        """Q-learning update rule."""
+        """Q-learning update rule with reward clipping to prevent Q-value explosion."""
+        clipped_reward = max(-REWARD_CLIP, min(REWARD_CLIP, reward))
         current_q = self.q_table[state][action]
         next_max_q = np.max(self.q_table[next_state])
-        
+
         new_q = current_q + self.learning_rate * (
-            reward + self.discount_factor * next_max_q - current_q
+            clipped_reward + self.discount_factor * next_max_q - current_q
         )
         self.q_table[state][action] = new_q
     
@@ -438,9 +445,12 @@ def print_learned_policy(agent: QLearningAgent):
     
     for state, q_values in sorted_states:
         best_action = np.argmax(q_values)
-        dist_b, time_b, price_b, direction, spread_b = state
+        if len(state) == 5:
+            dist_b, time_b, price_b, direction, mom_b = state
+            state_str = f"d={dist_b} t={time_b} p={price_b} dir={direction} m={mom_b}"
+        else:
+            state_str = str(state)
         
-        state_str = f"d={dist_b} t={time_b} p={price_b} dir={direction} sp={spread_b}"
         q_str = f"[{q_values[0]:+.1f}, {q_values[1]:+.1f}, {q_values[2]:+.1f}]"
         
         print(f"{state_str:>30} | {action_names[best_action]:>10} | {q_str:>30}")

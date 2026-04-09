@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use crate::black_scholes::EwmaVolatilityTracker;
 
 /// Asset-specific configuration for trading different cryptocurrencies
 #[derive(Debug, Clone)]
@@ -11,6 +12,7 @@ pub struct AssetConfig {
     pub coinbase_pair: String,
     pub volatility_baseline: f64,
     pub api_base_url: String, // "https://api.elections.kalshi.com" or "https://demo-api.kalshi.co"
+    pub min_fair_value: f64,  // Minimum B-S fair value for Oracle bot entry
 }
 
 /// Returns the number of seconds remaining until the contract's expiry.
@@ -45,12 +47,15 @@ pub struct MarketState {
 pub struct TradeRecord {
     pub opened_at:   DateTime<Utc>,
     pub closed_at:   DateTime<Utc>,
+    pub asset:       String,   // "btc", "eth", "sol", "xrp", "oracle-btc", etc.
     pub strike:      f64,
     pub side:        String,   // "YES" or "NO"
     pub entry_price: f64,
     pub exit_price:  f64,
     pub pnl:         f64,
     pub roi:         f64,
+    pub settlement:  String,   // "YES" or "NO" - actual Kalshi settlement result
+    pub fair_value:  f64,      // Model's fair value at trade entry (for analysis)
 }
 
 /// An open paper-traded position awaiting settlement.
@@ -130,6 +135,49 @@ pub struct IndexState {
     pub ts:              DateTime<Utc>,
 }
 
+/// Coinbase Advanced Trade L2 order book state (for Oracle bot).
+#[derive(Debug, Clone)]
+pub struct CoinbaseL2State {
+    pub mid_price: f64,
+    pub best_bid: f64,
+    pub best_ask: f64,
+    pub ts: DateTime<Utc>,
+}
+
+/// Active order state for Oracle bot order management.
+#[derive(Debug, Clone)]
+pub struct ActiveOrder {
+    pub order_id: String,
+    pub ticker: String,
+    pub side: String,
+    pub limit_price: f64,
+    pub count: u64,
+    pub placed_at: DateTime<Utc>,
+    pub last_amend: DateTime<Utc>,
+}
+
+/// Tracking structure for Oracle orders that are not yet confirmed filled.
+#[derive(Debug, Clone)]
+pub struct OracleRestingOrder {
+    pub order_id: String,
+    pub ticker: String,
+    pub side: String,
+    pub count: u64,
+    pub limit_price: f64,
+    pub fair_value: f64,
+    pub edge: f64,
+    pub volatility: f64,
+    pub entry_yes_bid: f64,
+    pub entry_yes_ask: f64,
+    pub entry_no_bid: f64,
+    pub entry_no_ask: f64,
+    pub entry_fee: f64,
+    pub total_cost: f64,
+    pub expiry_ts: Option<DateTime<Utc>>,
+    pub strike: f64,
+    pub placed_at: DateTime<Utc>,
+}
+
 /// Frozen summary statistics from the observation window (t=0..9).
 /// Computed once when the market transitions from Observe → Trade.
 #[derive(Debug, Clone)]
@@ -174,10 +222,10 @@ pub struct AppState {
     /// Latest Kalshi tick — written by kalshi_listener.
     pub kalshi: Option<MarketState>,
 
-    /// Latest synthetic index state — written by coinbase_listener.
+    /// Latest synthetic index state — written by coinbase_listener (Kraken).
     pub coinbase: Option<IndexState>,
 
-    /// Latest price from Binance.US (or Global) WebSocket feed.
+    /// Latest price from Bitstamp WebSocket feed.
     pub binance_price: Option<f64>,
 
     /// Rolling 60-second window of prices for settlement average calculation.
@@ -231,7 +279,30 @@ pub struct AppState {
 
     /// Current RL model version (loaded from model_registry/current/).
     pub model_version: Option<String>,
+
+    // --- Data source health tracking ---
+    /// Timestamp of last Kraken price update.
+    pub kraken_last_update: Option<DateTime<Utc>>,
+    /// Timestamp of last Coinbase price update.
+    pub coinbase_last_update: Option<DateTime<Utc>>,
+    /// Timestamp of last Bitstamp price update.
+    pub bitstamp_last_update: Option<DateTime<Utc>>,
+
+    // --- Oracle bot support ---
+    /// Coinbase Advanced Trade L2 order book state (for Oracle bot).
+    pub coinbase_l2: Option<CoinbaseL2State>,
+    /// Last time we logged a debug message (used for throttling).
+    pub last_debug_log: Option<DateTime<Utc>>,
+    /// Active Oracle bot orders (ticker → order state).
+    pub active_oracle_orders: HashMap<String, ActiveOrder>,
+    /// Rolling volatility calculation window (Oracle bot).
+    pub volatility_window: VecDeque<(DateTime<Utc>, f64)>,
+    /// Stateful volatility trackers per asset (Oracle bot).
+    pub multi_volatility_trackers: HashMap<String, EwmaVolatilityTracker>,
 }
+
+/// Maximum age (in seconds) before a data source is considered stale/down.
+const SOURCE_STALE_SECS: i64 = 30;
 
 impl AppState {
     pub fn new() -> Self {
@@ -260,6 +331,106 @@ impl AppState {
             pending_counterfactuals: Vec::new(),
             metrics_queue: VecDeque::new(),
             model_version: None,
+            kraken_last_update:   None,
+            coinbase_last_update: None,
+            bitstamp_last_update: None,
+            coinbase_l2:              None,
+            last_debug_log:           None,
+            active_oracle_orders:     HashMap::new(),
+            volatility_window:        VecDeque::new(),
+            multi_volatility_trackers: HashMap::new(),
+        }
+    }
+
+    /// Returns `true` if Kraken data is fresh (updated within the last 30s).
+    pub fn is_kraken_alive(&self) -> bool {
+        self.kraken_last_update
+            .map_or(false, |ts| (Utc::now() - ts).num_seconds() < SOURCE_STALE_SECS)
+    }
+
+    /// Returns `true` if Coinbase data is fresh (updated within the last 30s).
+    pub fn is_coinbase_alive(&self) -> bool {
+        self.coinbase_last_update
+            .map_or(false, |ts| (Utc::now() - ts).num_seconds() < SOURCE_STALE_SECS)
+    }
+
+    /// Returns `true` if Bitstamp data is fresh (updated within the last 30s).
+    pub fn is_bitstamp_alive(&self) -> bool {
+        self.bitstamp_last_update
+            .map_or(false, |ts| (Utc::now() - ts).num_seconds() < SOURCE_STALE_SECS)
+    }
+
+    /// Number of currently alive data sources.
+    pub fn alive_source_count(&self) -> u8 {
+        let mut count = 0;
+        if self.is_kraken_alive()   { count += 1; }
+        if self.is_coinbase_alive() { count += 1; }
+        if self.is_bitstamp_alive() { count += 1; }
+        count
+    }
+
+    /// Compute a hybrid spot price from all non-stale data sources.
+    /// Returns `None` only if ALL three sources are stale/missing.
+    pub fn best_available_price(&self) -> Option<f64> {
+        let mut sum = 0.0;
+        let mut count = 0.0;
+
+        // Source 1: Kraken (WebSocket)
+        if self.is_kraken_alive() {
+            if let Some(ref idx) = self.coinbase {
+                if idx.current_price > 0.0 {
+                    sum += idx.current_price;
+                    count += 1.0;
+                }
+            }
+        }
+
+        // Source 2: Coinbase (REST)
+        if self.is_coinbase_alive() {
+            if let Some(p) = self.coinbase_price {
+                if p > 0.0 {
+                    sum += p;
+                    count += 1.0;
+                }
+            }
+        }
+
+        // Source 3: Bitstamp (WebSocket)
+        if self.is_bitstamp_alive() {
+            if let Some(p) = self.binance_price {
+                if p > 0.0 {
+                    sum += p;
+                    count += 1.0;
+                }
+            }
+        }
+
+        if count > 0.0 {
+            Some(sum / count)
+        } else {
+            None
+        }
+    }
+
+    /// Build a synthetic `IndexState` from the best available price.
+    /// Falls back to constructing one from Coinbase or Bitstamp if Kraken is down.
+    pub fn best_available_index(&self) -> Option<IndexState> {
+        // If Kraken is alive and has a full IndexState, prefer it
+        if self.is_kraken_alive() {
+            if let Some(ref idx) = self.coinbase {
+                return Some(idx.clone());
+            }
+        }
+
+        // Otherwise, construct a synthetic IndexState from whatever price we have
+        if let Some(price) = self.best_available_price() {
+            Some(IndexState {
+                current_price:   price,
+                rolling_avg_60s: price, // approximate — no rolling window without Kraken
+                ts:              Utc::now(),
+            })
+        } else {
+            None
         }
     }
 }

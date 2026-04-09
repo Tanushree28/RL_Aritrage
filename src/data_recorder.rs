@@ -50,12 +50,15 @@ pub async fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
             id          INTEGER PRIMARY KEY,
             opened_at   TEXT,
             closed_at   TEXT,
+            asset       TEXT,
             strike      REAL,
             side        TEXT,
             entry_price REAL,
             exit_price  REAL,
             pnl         REAL,
-            roi         REAL
+            roi         REAL,
+            settlement  TEXT,
+            fair_value  REAL
         )",
     )?;
     eprintln!("[data_recorder] SQLite DB ready at {}", db_path);
@@ -77,46 +80,55 @@ pub async fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         }
 
         // --- Snapshot state in one lock acquisition ---------------------------
-        let (kalshi, coinbase, cb_price, binance_price, model_prob, trades) = {
+        let (kalshi, coinbase, cb_price, binance_price, model_prob, trades, avg_price_computed) = {
             let mut app = state.lock().unwrap();
             let trades: Vec<_> = app.pending_trades.drain(..).collect();
-            (app.kalshi.clone(), app.coinbase.clone(), app.coinbase_price, app.binance_price, app.model_prob, trades)
+            let avg = app.best_available_price().unwrap_or(0.0);
+            (app.kalshi.clone(), app.coinbase.clone(), app.coinbase_price, app.binance_price, app.model_prob, trades, avg)
         };
 
         // --- SQLite: insert any completed trades ------------------------------
         for trade in trades {
             if let Err(e) = db.execute(
                 "INSERT INTO trades \
-                 (opened_at, closed_at, strike, side, entry_price, exit_price, pnl, roi) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (opened_at, closed_at, asset, strike, side, entry_price, exit_price, pnl, roi, settlement, fair_value) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 rusqlite::params![
                     trade.opened_at.to_rfc3339(),
                     trade.closed_at.to_rfc3339(),
+                    trade.asset,
                     trade.strike,
                     trade.side,
                     trade.entry_price,
                     trade.exit_price,
                     trade.pnl,
                     trade.roi,
+                    trade.settlement,
+                    trade.fair_value,
                 ],
             ) {
                 eprintln!("[data_recorder] SQLite insert failed: {e}");
             }
         }
 
-        // --- CSV: write tick row when both feeds are live ---------------------
-        let (kalshi, coinbase) = match (kalshi, coinbase) {
-            (Some(k), Some(c)) => (k, c),
-            (None, Some(_)) => {
+        // --- CSV: write tick row when Kalshi + at least 1 price source are live ---
+        let kalshi = match kalshi {
+            Some(k) => k,
+            None => {
                 eprintln!("[data_recorder] waiting for Kalshi data...");
                 continue;
             }
-            (Some(_), None) => {
-                eprintln!("[data_recorder] waiting for Coin/Kraken data...");
-                continue;
-            }
-            (None, None) => {
-                eprintln!("[data_recorder] waiting for both data feeds...");
+        };
+
+        // Build coinbase (IndexState) from best available — or skip if nothing alive
+        let coinbase_index = {
+            let app = state.lock().unwrap();
+            app.best_available_index()
+        };
+        let coinbase = match coinbase_index {
+            Some(c) => c,
+            None => {
+                eprintln!("[data_recorder] waiting for at least 1 price source...");
                 continue;
             }
         };
@@ -154,13 +166,7 @@ pub async fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         let cb = cb_price.unwrap_or(0.0);
         let kr = coinbase.current_price;
         let bn = binance_price.unwrap_or(0.0);
-
-        let mut sum = 0.0;
-        let mut count = 0.0;
-        if cb > 0.0 { sum += cb; count += 1.0; }
-        if kr > 0.0 { sum += kr; count += 1.0; }
-        if bn > 0.0 { sum += bn; count += 1.0; }
-        let avg_price = if count > 0.0 { sum / count } else { 0.0 };
+        let avg_price = avg_price_computed;
 
         let row = CsvRow {
             timestamp_unix_ms:  Utc::now().timestamp_millis() as u64,
