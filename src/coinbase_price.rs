@@ -22,7 +22,18 @@ pub async fn run(state: Arc<Mutex<AppState>>, config: Arc<AssetConfig>) -> anyho
 
         match fetch_price(&client, &url).await {
             Ok(price) => {
-                state.lock().unwrap().coinbase_price = Some(price);
+                let now = chrono::Utc::now();
+                let mut app = state.lock().unwrap();
+                app.coinbase_price = Some(price);
+                app.coinbase_last_update = Some(now);
+
+                // Also feed into price_window so settlement avg + feature computation
+                // stays alive even when Kraken is down
+                app.price_window.push_back((now, price));
+                let cutoff = now - chrono::TimeDelta::seconds(60);
+                while let Some(&(ts, _)) = app.price_window.front() {
+                    if ts < cutoff { app.price_window.pop_front(); } else { break; }
+                }
             }
             Err(e) => {
                 eprintln!("[coinbase_feed] fetch error: {e}");

@@ -9,6 +9,7 @@
 //! Or in paper mode:
 //!   PAPER_MODE=1 KALSHI_ASSET=btc cargo run --bin kalshi-arb-rulebased
 
+mod black_scholes;
 mod coinbase_listener;
 mod coinbase_price;
 mod data_recorder;
@@ -44,6 +45,7 @@ fn get_asset_config() -> AssetConfig {
         coinbase_pair: "BTC-USD".to_string(),
         volatility_baseline: 0.02,
         api_base_url: api_url,
+        min_fair_value: 0.0,
     }
 }
 

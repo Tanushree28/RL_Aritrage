@@ -1,169 +1,292 @@
 # Kalshi Bot Command Reference
+> 🖥️ = Run inside SSH on server | 💻 = Run on your local Mac
+
+---
 
 ## 🚀 1. Start & Stop
 
-### Start Everything (Recommended)
-
-Cleans up old processes and launches all 8 bots (4 Core + 4 Bucket9) in the background.
-
+### Start Everything (17 Bots + 4 Learners + Dashboards)
 ```bash
-./start_everything.sh
+# 🖥️
+cd /root/kalshi-arb && ./start_everything.sh
 ```
 
-### Emergency Stop
-
-Kills all running instances of the bot immediately.
-
+### Emergency Stop (All Bots + Learners)
 ```bash
-pkill -f "kalshi-arb"
+# 🖥️
+pkill -f "target/release/kalshi-arb" || true
+pkill -f "continuous_learner.py" || true
+```
+
+> ⚠️ Never use `pkill -f "kalshi-arb"` — it also kills `cargo build`
+
+### Stop Only Continuous Learners
+```bash
+# 🖥️
+pkill -f "continuous_learner.py"
+```
+
+### Restart Continuous Learners (All 4 Assets)
+```bash
+# 🖥️
+pkill -f "continuous_learner.py" || true
+sleep 2
+cd /root/kalshi-arb
+for asset in btc eth sol xrp; do
+    PYTHONUNBUFFERED=1 nohup python3 continuous_learner.py --asset $asset --loop --interval 120 > logs/continuous_learner-$asset.log 2>&1 &
+    echo "$asset learner PID: $!"
+done
+```
+
+### Start Optimal Policy Bot (Paper Mode, BTC)
+```bash
+# 🖥️
+cd /root/kalshi-arb && KALSHI_ASSET=optimal-btc nohup ./target/release/kalshi-arb-optimal > logs/optimal-btc.log 2>&1 &
+echo "Optimal BTC PID: $!"
+```
+
+### Start With a Specific Frozen Policy Version
+```bash
+# 🖥️
+KALSHI_ASSET=optimal-btc \
+OPTIMAL_POLICY_PATH=model_registry/btc/versions/v20260409_013544/rl_policy.json \
+nohup ./target/release/kalshi-arb-optimal > logs/optimal-btc.log 2>&1 &
+```
+
+### Stop Optimal Bot
+```bash
+# 🖥️
+pkill -f "kalshi-arb-optimal"
+```
+
+### Restart Dashboard Only
+```bash
+# 🖥️
+cd /root/kalshi-arb
+fuser -k 8501/tcp 2>/dev/null || true
+sleep 2
+nohup streamlit run monitoring/dashboard.py > logs/dashboard.log 2>&1 &
 ```
 
 ---
 
-## 📜 2. Monitoring Logs
+## 🔨 2. Building
 
-### Monitor EVERYTHING (The "Matrix" View)
+> ⚠️ Only needed when `.rs` Rust files change. Python/shell/JSON changes need NO rebuild.
 
-Watch logs for ALL 8 bots simultaneously.
-
+### Build Everything (All Binaries) — ~10 min
 ```bash
+# 🖥️ Kill bots first, then build
+pkill -f "target/release/kalshi-arb" || true
+pkill -f "continuous_learner.py" || true
+sleep 2
+cd /root/kalshi-arb && cargo build --release 2>&1 | tail -5
+```
+
+### Build Single Binary (Fast — ~1-2 min)
+```bash
+# 🖥️
+cd /root/kalshi-arb && cargo build --release --bin kalshi-arb-optimal 2>&1 | tail -5
+cd /root/kalshi-arb && cargo build --release --bin kalshi-arb-ensemble 2>&1 | tail -5
+```
+
+### Upload Changed Rust Files from Mac then Rebuild
+```bash
+# 💻 Upload files
+scp ~/Desktop/kalshi-arb/src/optimal_executor.rs \
+    ~/Desktop/kalshi-arb/src/ensemble_executor.rs \
+    ~/Desktop/kalshi-arb/src/spread_compression.rs \
+    root@68.183.174.225:/root/kalshi-arb/src/
+
+# 🖥️ Build only what changed
+cd /root/kalshi-arb && cargo build --release --bin kalshi-arb-optimal 2>&1 | tail -5
+```
+
+---
+
+## 📜 3. Monitoring Logs
+
+### All Bots at Once
+```bash
+# 🖥️
 tail -f logs/*.log
 ```
 
-### Monitor by Group
-
-**All Core Bots (ML Strategy):**
-
+### By Bot Type
 ```bash
-tail -f logs/core-*.log
+# 🖥️
+tail -f logs/core-*.log          # Core ML bots
+tail -f logs/bucket9-*.log       # Bucket 9 bots
+tail -f logs/ensemble-*.log      # Ensemble supervisor bots
+tail -f logs/oracle-*.log        # Oracle Black-Scholes bots
+tail -f logs/optimal-btc.log     # Optimal policy bot
+tail -f logs/continuous_learner-*.log  # All 4 learners
 ```
 
-**All Bucket 9 Bots (Deep OTM Strategy):**
-
+### Watch Optimal Bot Decisions
 ```bash
-tail -f logs/bucket9-*.log
+# 🖥️
+tail -f logs/optimal-btc.log | grep -i "action\|trade\|entry\|hold\|buy"
 ```
 
-### Monitor by Asset (Core + Bucket 9 combined)
-
-**Bitcoin (BTC):**
-
+### Watch Ensemble Voting
 ```bash
-tail -f logs/*btc*.log
+# 🖥️
+tail -f logs/ensemble-btc.log
 ```
 
-**Ethereum (ETH):**
-
+### Watch Continuous Learner Training
 ```bash
-tail -f logs/*eth*.log
-```
-
-**Solana (SOL):**
-
-```bash
-tail -f logs/*sol*.log
-```
-
-**Ripple (XRP):**
-
-```bash
-tail -f logs/*xrp*.log
-```
-
-### Monitor Specific Instances
-
-```bash
-tail -f logs/core-btc.log       # Core BTC only
-tail -f logs/bucket9-btc.log    # Bucket 9 BTC only
+# 🖥️
+tail -f logs/continuous_learner-btc.log
+tail -f logs/continuous_learner-btc.log | grep -i "sharpe\|promot\|beat\|score"
 ```
 
 ---
 
-## 📊 3. Verifying Data & Prices
+## 📊 4. Dashboards & URLs
 
-### Verify Bitstamp Connection
+| Dashboard | URL |
+|-----------|-----|
+| **Main Monitoring Dashboard** | http://68.183.174.225:8501 |
+| **RL State Space Explorer** | http://68.183.174.225:8080/rl_dashboard.html |
 
-Check if the Bitstamp WebSocket is connected and receiving data for a specific asset.
+---
 
+## 🧠 5. RL Model Management
+
+### Check All Model Performance
 ```bash
-grep "Bitstamp" logs/core-btc.log | tail -n 10
+# 🖥️
+cd /root/kalshi-arb && python3 check_models.py
 ```
 
-### Check CSV Recordings (Price Feeds)
-
-Verify that CSVs are being written and contain non-zero prices for Bitstamp (`bitstamp_price`).
-
-**General Command (Last 5 rows of latest file):**
-
+### Check Which Policy Optimal Bot is Using + When It Was Trained
 ```bash
-ls -t data/btc/recordings/$(date +%Y-%m-%d)/*.csv | head -n 1 | xargs tail -n 5
+# 🖥️
+python3 -c "
+import json, datetime
+with open('/root/kalshi-arb/model/btc/rl_policy.json') as f:
+    d = json.load(f)
+utc = datetime.datetime.fromtimestamp(d['timestamp'], tz=datetime.timezone.utc)
+print('Policy trained (UTC):', utc.strftime('%b %d %I:%M %p UTC'))
+print('States in Q-table:', len(d['q_table']))
+print('Epsilon:', d.get('epsilon', 'unknown'))
+"
 ```
 
-**Check other assets:**
-Replace `btc` with `eth`, `sol`, or `xrp` in the path:
-
+### Run Manual Training Cycle (BTC)
 ```bash
-ls -t data/eth/recordings/$(date +%Y-%m-%d)/*.csv | head -n 1 | xargs tail -n 5
+# 🖥️
+cd /root/kalshi-arb && python3 continuous_learner.py --asset btc 2>&1
 ```
 
-### Monitor Active CSV Updates (Real-time)
-
-See which recording files are being updated right now (timestamps changing).
-
+### Run Fresh Training (Wipes Q-table, starts from zero)
 ```bash
-while true; do clear; ls -lt data/*/recordings/$(date +%Y-%m-%d)/*.csv | head -n 10; sleep 1; done
+# 🖥️
+cd /root/kalshi-arb && python3 continuous_learner.py --asset btc --fresh 2>&1
 ```
 
-### Check Executed Trades (SQLite)
-
-See the 5 most recent trades placed by the bots.
-
-**Core BTC Trades:**
-
+### Fix: Model Not Promoting (Sharpe threshold too high)
 ```bash
+# 🖥️ Lower MIN_SHARPE from 1.0 to 0.3
+sed -i 's/MIN_SHARPE = 1.0/MIN_SHARPE = 0.3/' /root/kalshi-arb/continuous_learner.py
+grep "MIN_SHARPE" /root/kalshi-arb/continuous_learner.py
+# Then restart learners
+pkill -f "continuous_learner.py" && sleep 2
+for asset in btc eth sol xrp; do
+    PYTHONUNBUFFERED=1 nohup python3 continuous_learner.py --asset $asset --loop --interval 120 > logs/continuous_learner-$asset.log 2>&1 &
+done
+```
+
+### Manually Promote a Model to Production
+```bash
+# 🖥️ Find latest version
+find model_registry/btc/versions -name "rl_policy.json" | sort -r | head -3
+
+# Copy to production
+cp model_registry/btc/versions/<VERSION>/rl_policy.json model/btc/rl_policy.json
+
+# Update timestamp so dashboard shows new time
+python3 -c "
+import json, time
+with open('model/btc/rl_policy.json') as f: d = json.load(f)
+d['timestamp'] = time.time()
+with open('model/btc/rl_policy.json', 'w') as f: json.dump(d, f)
+print('Done:', time.strftime('%I:%M %p'))
+"
+```
+
+---
+
+## 📈 6. Trade Data
+
+### Check Recent Trades by Bot
+```bash
+# 🖥️
 sqlite3 data/btc/trades.db "SELECT * FROM trades ORDER BY opened_at DESC LIMIT 5;"
+sqlite3 data/bucket9-btc/trades.db "SELECT * FROM trades ORDER BY opened_at DESC LIMIT 5;"
+sqlite3 data/ensemble-btc/trades.db "SELECT * FROM trades ORDER BY opened_at DESC LIMIT 5;"
+sqlite3 data/optimal-btc/trades.db "SELECT * FROM trades ORDER BY rowid DESC LIMIT 5;"
+sqlite3 data/oracle-btc/trades.db "SELECT * FROM trades ORDER BY rowid DESC LIMIT 5;"
 ```
 
-**Bucket 9 BTC Trades:**
-
+### Compare Ensemble vs Optimal
 ```bash
-sqlite3 data/bucket9-btc/trades.db "SELECT * FROM trades ORDER BY opened_at DESC LIMIT 5;"
+# 🖥️
+echo "=== Ensemble ===" && sqlite3 data/ensemble-btc/trades.db "SELECT COUNT(*), AVG(pnl), SUM(pnl) FROM trades;"
+echo "=== Optimal ===" && sqlite3 data/optimal-btc/trades.db "SELECT COUNT(*), AVG(pnl), SUM(pnl) FROM trades;"
 ```
 
 ---
 
-## 🛠 4. Maintenance & Debugging
+## 🛠 7. Maintenance & Debugging
 
-### Run Interactive Mode (Single Bot Debug)
-
-Run a single bot instance in the foreground to see immediate stdout/stderr.
-
+### Check All Running Processes
 ```bash
-./run_interactive.sh
+# 🖥️
+ps aux | grep "target/release/kalshi-arb" | grep -v grep
+ps aux | grep continuous_learner | grep -v grep
 ```
 
-### Force Rebuild & Restart
-
-If you changed code and need to ensure the binary is updated:
-
+### Check Memory Usage
 ```bash
-# 1. Clean old binaries
-cargo clean
-
-# 2. Build release version (optimized)
-cargo build --release
-
-# 3. Kill old bots
-pkill -f "kalshi-arb"
-
-# 4. Start fresh
-./start_everything.sh
+# 🖥️
+free -h
+ps aux --sort=-%mem | head -15
 ```
 
-### Check Process Status
-
-Verify which bots are actually running:
-
+### Fix: Too Many Duplicate Learners (memory leak)
 ```bash
-ps aux | grep kalshi-arb | grep -v grep
+# 🖥️ Kill all, restart exactly 4
+pkill -f "continuous_learner.py" || true
+sleep 3
+ps aux | grep continuous_learner | grep -v grep   # should show nothing
+cd /root/kalshi-arb
+for asset in btc eth sol xrp; do
+    PYTHONUNBUFFERED=1 nohup python3 continuous_learner.py --asset $asset --loop --interval 120 > logs/continuous_learner-$asset.log 2>&1 &
+done
+free -h   # should show ~1GB free
+```
+
+### Fix: Dashboard Not Loading (port conflict)
+```bash
+# 🖥️
+fuser -k 8501/tcp 2>/dev/null || true
+sleep 2
+cd /root/kalshi-arb && nohup streamlit run monitoring/dashboard.py > logs/dashboard.log 2>&1 &
+```
+
+### Check Which Port Each Dashboard Is On
+```bash
+# 🖥️
+ss -tlnp | grep -E ":8080|:8501"
+```
+
+### Upload Python/Shell Files (no rebuild needed)
+```bash
+# 💻
+scp ~/Desktop/kalshi-arb/continuous_learner.py root@68.183.174.225:/root/kalshi-arb/continuous_learner.py
+scp ~/Desktop/kalshi-arb/start_everything.sh root@68.183.174.225:/root/kalshi-arb/start_everything.sh
+scp ~/Desktop/kalshi-arb/check_models.py root@68.183.174.225:/root/kalshi-arb/check_models.py
 ```

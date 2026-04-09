@@ -19,6 +19,23 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::model::{AppState, AssetConfig, MarketState};
 
+/// Robustly extracts price fields from Kalshi JSON, supporting both the
+/// new March 12 fixed-point dollar strings and the legacy integer fields.
+fn parse_kalshi_price(msg: &serde_json::Value, dollars_field: &str, legacy_field: &str) -> Option<f64> {
+    // 1. Try the new fixed-point dollar string field (e.g. "0.1200" or "$0.1200")
+    if let Some(s) = msg.get(dollars_field).and_then(|v| v.as_str()) {
+        let clean = s.trim_start_matches('$'); // handle optional prefix
+        if let Ok(f) = clean.parse::<f64>() {
+            return Some(f);
+        }
+    }
+    // 2. Fallback to the legacy integer field (cents) if it still exists
+    if let Some(i) = msg.get(legacy_field).and_then(|v| v.as_f64()) {
+        return Some(i / 100.0);
+    }
+    None
+}
+
 // Production endpoint resolves in most environments; the bot falls back to
 // the demo endpoint automatically if the production DNS lookup fails.
 const WS_URL_PROD: &str = "wss://api.elections.kalshi.com/trade-api/ws/v2";
@@ -315,7 +332,11 @@ async fn fetch_event_strike(
         None    => { eprintln!("[kalshi_listener] REST no 'market' key for {market_ticker}: {body}"); return None; }
     };
 
-    let floor_strike = match market.get("floor_strike").and_then(|v| v.as_f64()) {
+    let floor_strike = match market.get("floor_strike_dollars").and_then(|v| v.as_str()) {
+        Some(s) => s.trim_start_matches('$').parse::<f64>().ok(),
+        None => market.get("floor_strike").and_then(|v| v.as_f64()),
+    };
+    let floor_strike = match floor_strike {
         Some(fs) => fs,
         None     => return None,   // reference window not yet complete; retry next tick
     };
@@ -407,21 +428,22 @@ fn process_ticker(
     strike:         f64,
     expiry:         chrono::DateTime<chrono::Utc>,
 ) {
-    let yes_bid = msg.get("yes_bid").and_then(|v| v.as_f64()).unwrap_or(0.0) / 100.0;
-    let yes_ask = msg.get("yes_ask").and_then(|v| v.as_f64()).unwrap_or(0.0) / 100.0;
-    let no_bid = msg
-        .get("no_bid")
-        .and_then(|v| v.as_f64())
-        .map(|v| v / 100.0)
-        .unwrap_or(1.0 - yes_ask);
-    let no_ask = msg
-        .get("no_ask")
-        .and_then(|v| v.as_f64())
-        .map(|v| v / 100.0)
-        .unwrap_or(1.0 - yes_bid);
+    let yes_bid = parse_kalshi_price(msg, "yes_bid_dollars", "yes_bid").unwrap_or(0.0);
+    let yes_ask = parse_kalshi_price(msg, "yes_ask_dollars", "yes_ask").unwrap_or(0.0);
+    
+    // For NO bids/asks, we prefer explicit fields but can calculate from YES if missing
+    let no_bid = parse_kalshi_price(msg, "no_bid_dollars", "no_bid")
+        .unwrap_or_else(|| 1.0 - yes_ask);
+    let no_ask = parse_kalshi_price(msg, "no_ask_dollars", "no_ask")
+        .unwrap_or_else(|| 1.0 - yes_bid);
+
+    // Filter out obviously bogus ticks (zeros on both sides) which appear when series change
+    if yes_bid == 0.0 && yes_ask == 0.0 && no_bid == 0.0 && no_ask == 0.0 {
+        return;
+    }
 
     eprintln!(
-        "[kalshi_listener] {} strike={strike:.2} yes_ask={yes_ask:.2} yes_bid={yes_bid:.2}",
+        "[kalshi_listener] {} s={strike:.1} YA={yes_ask:.2} YB={yes_bid:.2} NA={no_ask:.2} NB={no_bid:.2}",
         market_ticker
     );
 

@@ -90,3 +90,30 @@ It starts up ("Bot Started").
 It executes a trade ("Long BTC...").
 It closes a trade ("Trade Closed: Profit...").
 Hourly PnL summary.
+
+### Oracle Bot Logic (Simple)
+
+What it trades: Kalshi 15-minute crypto binary options — contracts that pay $1 if price is above a strike at expiry, $0 if below.
+
+How it decides to trade:
+
+Get fair value — Uses Black-Scholes formula to compute the true probability that price will be above the strike at expiry. Inputs: current Coinbase spot price, strike price, time remaining, and EWMA volatility.
+
+4 gates must pass before placing an order:
+
+Coinbase L2 data is fresh (< 0.5s old)
+Time remaining is between 60–240 seconds (not too early, not too late)
+Fair value ≥ 0.85 (only trade high-probability contracts)
+Edge ≥ 0.05 (fair value minus Kalshi ask price — we need at least 5¢ of edge)
+Order placement — Places a passive limit order (post-only, maker) at fair_value - 0.03 (3¢ below fair value). This avoids paying taker fees.
+
+Dynamic amendment — Every loop tick (~1s), it recalculates fair value. If the optimal price has moved by ≥ 2¢, it cancels and replaces the resting order.
+
+Win/Loss:
+
+Buys YES when fair value is high (price is well above strike)
+Wins ($1 payout) if price stays above strike at expiry → profit = $1 - entry_price
+Loses ($0 payout) if price drops below strike → loss = entry_price
+Example: Strike = $100k, BTC at $101k with 2 min left. B-S says 92% probability → fair value = $0.92. Kalshi ask = $0.86. Edge = $0.06 (≥ 5¢ threshold). Bot places limit buy YES at $0.89 ($0.92 - $0.03). If filled and BTC stays above $100k → wins $0.11. If BTC drops below $100k → loses $0.89.
+
+Key insight: It only trades contracts where the math strongly favors the outcome (≥85% probability) AND the market is underpricing them by ≥5¢.

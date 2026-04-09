@@ -132,6 +132,28 @@ pub fn format_trade_entry(
 
 /// Formats a Trade Settlement notification (spec §6B).
 ///
+/// Formats an Oracle bot trade entry notification.
+pub fn format_oracle_trade_entry(
+    asset: &str,
+    side: &str,
+    price: f64,
+    count: u64,
+    principal: f64,
+    fair_value: f64,
+    volatility: f64,
+) -> String {
+    format!(
+        "Oracle {} FILLED (LIMIT AT ASK)\n\
+         {} @ ${:.2} x {} contracts\n\
+         Fair: ${:.3} | vol: {:.3}\n\
+         Cost: ${:.2}",
+        asset.to_uppercase(),
+        side.to_uppercase(), price, count,
+        fair_value, volatility,
+        principal
+    )
+}
+
 /// * `won`         – `true` for WIN, `false` for LOSS
 /// * `profit`      – signed dollar P&L for this trade
 /// * `roi_pct`     – return on investment percentage (signed)

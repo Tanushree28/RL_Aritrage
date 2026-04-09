@@ -35,7 +35,6 @@ STATE_BOUNDS = {
     'time_frac': (0.0, 1.0),     # Time as fraction of 300s
     'price': (0.0, 1.0),         # Yes price 0-1
     'direction': (0.0, 1.0),     # 0 or 1
-    'spread': (0.0, 0.1),        # Spread typically 0-10 cents
     'momentum': (-0.5, 0.5),     # Momentum -0.5% to +0.5%
 }
 
@@ -47,7 +46,7 @@ class DQNetwork(nn.Module):
     Architecture: Input → Hidden layers with ReLU → Output (Q-values per action)
     """
 
-    def __init__(self, state_dim: int = 6, action_dim: int = 3, hidden_dims: List[int] = [64, 32]):
+    def __init__(self, state_dim: int = 5, action_dim: int = 3, hidden_dims: List[int] = [64, 32]):
         super().__init__()
 
         layers = []
@@ -89,7 +88,7 @@ class DQNAgent:
 
     def __init__(
         self,
-        state_dim: int = 6,
+        state_dim: int = 5,
         action_dim: int = 3,
         hidden_dims: List[int] = [64, 32],
         learning_rate: float = LEARNING_RATE,
@@ -144,20 +143,19 @@ class DQNAgent:
         """
         Convert discrete state tuple to continuous features.
 
-        Input: (dist_bucket, time_bucket, price_bucket, direction, spread_bucket, momentum_bucket)
-        Output: Continuous [6] array
+        Input: (dist_bucket, time_bucket, price_bucket, direction, momentum_bucket)
+        Output: Continuous [5] array
         """
-        dist_bucket, time_bucket, price_bucket, direction, spread_bucket, momentum_bucket = state_tuple
+        dist_bucket, time_bucket, price_bucket, direction, momentum_bucket = state_tuple
 
         # Convert buckets to continuous values (midpoints)
         dist_pct = dist_bucket * 0.1  # Each bucket is ~0.1%
-        time_frac = time_bucket / 10.0  # 10 time buckets
+        time_frac = time_bucket / 12.0  # 12 time buckets now
         price = price_bucket * 0.1 + 0.05  # Price buckets 0-9 → 0.05-0.95
         direction = float(direction)
-        spread = spread_bucket * 0.05  # 0 or 1 → 0 or 0.05
         momentum = (momentum_bucket - 1) * 0.15  # 0,1,2 → -0.15, 0, 0.15
 
-        return np.array([dist_pct, time_frac, price, direction, spread, momentum], dtype=np.float32)
+        return np.array([dist_pct, time_frac, price, direction, momentum], dtype=np.float32)
 
     def choose_action(self, state: Tuple, training: bool = True) -> int:
         """
@@ -321,13 +319,13 @@ def test_agent():
     agent = DQNAgent()
 
     # Test action selection
-    test_state = (2, 3, 5, 1, 0, 1)  # Example state tuple
+    test_state = (2, 3, 5, 1, 1)  # Example state tuple: dist, time, price, dir, mom
     action = agent.choose_action(test_state, training=False)
     print(f"Test state {test_state} → Action {action}")
 
     # Test batch training
     batch_size = 32
-    states = np.random.randn(batch_size, 6).astype(np.float32)
+    states = np.random.randn(batch_size, 5).astype(np.float32)
     actions = np.random.randint(0, 3, batch_size)
     rewards = np.random.randn(batch_size).astype(np.float32) * 50
     next_states = states.copy()

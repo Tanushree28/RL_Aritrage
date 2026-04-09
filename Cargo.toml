@@ -25,6 +25,11 @@ path = "src/main.rs"
 name = "kalshi-arb-rulebased"
 path = "src/main_rulebased.rs"
 
+# Ensemble supervisor bots - vote-based consensus trading (3/4 agreement required)
+[[bin]]
+name = "kalshi-arb-ensemble"
+path = "src/main_ensemble.rs"
+
 # Bucket 9 maximizer bots - unlimited trades at $0.90-$0.99
 [[bin]]
 name = "kalshi-arb-bucket9-btc"
@@ -41,6 +46,16 @@ path = "src/main_bucket9.rs"
 [[bin]]
 name = "kalshi-arb-bucket9-xrp"
 path = "src/main_bucket9.rs"
+
+# Oracle bot — Black-Scholes fair value pricing
+[[bin]]
+name = "kalshi-arb-oracle"
+path = "src/main_oracle.rs"
+
+# Standalone optimal policy bot — paper trading only, single frozen Q-table, full metrics
+[[bin]]
+name = "kalshi-arb-optimal"
+path = "src/main_optimal.rs"
 
 [dependencies]
 
@@ -86,3 +101,6 @@ anyhow = "1"
 dotenvy = "0.15"
 hmac = "0.12.1"
 hex = "0.4.3"
+
+# --- JWT for Coinbase Advanced Trade WebSocket --------------------------------
+jsonwebtoken = "9"

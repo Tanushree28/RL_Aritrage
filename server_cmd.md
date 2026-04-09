@@ -1,151 +1,217 @@
-# 🚀 Kalshi Bot Server Commands
+# 🚀 Kalshi Bot — Server Command Reference
+> All commands below run **inside SSH** on the server unless marked 💻 (local Mac)
 
 **Server IP:** `68.183.174.225`
 **User:** `root`
-**Remote Path:** `~/kalshi-arb`
+**Path:** `/root/kalshi-arb/`
+
+---
+
+## 🌐 Dashboard URLs
+
+| Dashboard | URL |
+|-----------|-----|
+| **RL State Space Explorer** | http://68.183.174.225:8080/rl_dashboard.html |
+| **Main Monitoring Dashboard** | http://68.183.174.225:8501 |
 
 ---
 
 ## 1. Monitor Logs (Live) 🟢
 
-Check if the bots are running and what they are doing right now.
+**All 16 bots at once:**
+```bash
+ssh root@68.183.174.225 "tail -f ~/kalshi-arb/logs/*.log"
+```
 
-**Watch Core ML Bots (BTC, ETH, SOL, XRP):**
-
+**Core ML Bots:**
 ```bash
 ssh root@68.183.174.225 "tail -f ~/kalshi-arb/logs/core-*.log"
 ```
 
-**Watch Bucket 9 Bots:**
-
+**Bucket 9 Bots:**
 ```bash
 ssh root@68.183.174.225 "tail -f ~/kalshi-arb/logs/bucket9-*.log"
 ```
 
-**Watch Dashboard Logs:**
+**Ensemble Supervisor Bots:**
+```bash
+ssh root@68.183.174.225 "tail -f ~/kalshi-arb/logs/ensemble-*.log"
+```
 
+**Continuous Learners:**
+```bash
+ssh root@68.183.174.225 "tail -f ~/kalshi-arb/logs/continuous_learner-*.log"
+```
+
+**Main Dashboard:**
 ```bash
 ssh root@68.183.174.225 "tail -f ~/kalshi-arb/logs/dashboard.log"
 ```
 
 ---
 
-## 2. Sync Data (Server ➔ Mac) 📥
+## 2. Start / Stop Bots 🤖
 
-Download the recorded data and logs from the server to your local machine for analysis.
-
-**Download EVERYTHING (Data + Logs):**
-
+**Start everything (all 16 bots + 4 learners):**
 ```bash
-# Creates a 'server_backup' folder on your Mac
+ssh root@68.183.174.225 "cd ~/kalshi-arb && ./start_everything.sh"
+```
+
+**Emergency stop ALL bots:**
+```bash
+ssh root@68.183.174.225 "pkill -f 'kalshi-arb'"
+```
+
+**Restart ensemble bots only:**
+```bash
+ssh root@68.183.174.225 "cd ~/kalshi-arb && pkill -f 'kalshi-arb-ensemble' && for asset in btc eth sol xrp; do KALSHI_ASSET=ensemble-\$asset nohup ./target/release/kalshi-arb-ensemble > logs/ensemble-\$asset.log 2>&1 & done"
+```
+
+**Restart continuous learners:**
+```bash
+ssh root@68.183.174.225 "cd ~/kalshi-arb && pkill -f continuous_learner && for asset in btc eth sol xrp; do PYTHONUNBUFFERED=1 nohup python3 continuous_learner.py --asset \$asset --loop --interval 120 > logs/continuous_learner-\$asset.log 2>&1 & done"
+```
+
+---
+
+## 3. RL Model Management 🧠
+
+**Check best models per asset:**
+```bash
+ssh root@68.183.174.225 "cd ~/kalshi-arb && python3 check_models.py"
+```
+
+**Run one manual training cycle (BTC):**
+```bash
+ssh root@68.183.174.225 "cd ~/kalshi-arb && python3 continuous_learner.py --asset btc 2>&1"
+```
+
+**Run fresh training (wipes Q-table):**
+```bash
+ssh root@68.183.174.225 "cd ~/kalshi-arb && python3 continuous_learner.py --asset btc --fresh 2>&1"
+```
+
+**Manually update dashboard with latest model:**
+```bash
+ssh root@68.183.174.225 "cd ~/kalshi-arb && cp model_registry/btc/versions/\$(ls model_registry/btc/versions | sort -r | head -1)/rl_policy.json model/btc/rl_policy.json && python3 -c \"import json,time; d=json.load(open('model/btc/rl_policy.json')); d['timestamp']=time.time(); json.dump(d,open('model/btc/rl_policy.json','w')); print('Done')\""
+```
+
+---
+
+## 4. Sync Data (Server → Mac) 📥
+
+**Download everything (data + logs):**
+```bash
 mkdir -p server_backup
 rsync -avz --progress root@68.183.174.225:~/kalshi-arb/data/ ./server_backup/data/
 rsync -avz --progress root@68.183.174.225:~/kalshi-arb/logs/ ./server_backup/logs/
 ```
 
-**Download ONLY Logic/Trade Logs:**
-
+**Download logs only:**
 ```bash
 rsync -avz --progress root@68.183.174.225:~/kalshi-arb/logs/ ./server_logs/
 ```
 
-**Back up to OneDrive (Cloud) ☁️:**
-Push data to OneDrive manually:
-
+**Back up to OneDrive:**
 ```bash
 ssh root@68.183.174.225 "~/kalshi-arb/backup_to_onedrive.sh"
 ```
 
 ---
 
-## 3. Dashboard Access 📊
+## 5. Deploy Code Updates (Mac → Server) 💻
 
-View the live performance monitoring.
-
-**URL:** [http://68.183.174.225:8501](http://68.183.174.225:8501)
-
-**If Dashboard is Down/Stuck:**
-Restart it remotely with this valid `nohup` command:
-
-```bash
-ssh root@68.183.174.225 "cd ~/kalshi-arb && pkill -f streamlit; nohup streamlit run monitoring/dashboard.py > logs/dashboard.log 2>&1 & disown"
-```
-
----
-
-## 4. Server Management 🛠️
-
-**Restart ALL Bots (Clean Reset):**
-This stops everything and restarts fresh (good if things look weird).
-
-```bash
-ssh root@68.183.174.225 "cd ~/kalshi-arb && ./start_everything.sh"
-```
-
-**Deploy Code Updates (Mac ➔ Server):**
-If you changed code on your Mac, push it to the server:
-
+**Push all code changes:**
 ```bash
 ./push_to_server.sh
 ```
 
-**Check System Usage (CPU/RAM):**
+**Push a specific file:**
+```bash
+scp /Users/tanushreenepal/Desktop/kalshi-arb/src/ensemble_executor.rs root@68.183.174.225:/root/kalshi-arb/src/ensemble_executor.rs
+scp /Users/tanushreenepal/Desktop/kalshi-arb/continuous_learner.py root@68.183.174.225:/root/kalshi-arb/continuous_learner.py
+scp /Users/tanushreenepal/Desktop/kalshi-arb/check_models.py root@68.183.174.225:/root/kalshi-arb/check_models.py
+```
 
+**Rebuild after code change:**
+```bash
+ssh root@68.183.174.225 "cd ~/kalshi-arb && cargo build --release --bin kalshi-arb-ensemble 2>&1 | tail -5"
+```
+
+---
+
+## 6. Check Trade Data 📈
+
+**Recent trades by bot:**
+```bash
+ssh root@68.183.174.225 "sqlite3 ~/kalshi-arb/data/btc/trades.db 'SELECT * FROM trades ORDER BY opened_at DESC LIMIT 5;'"
+ssh root@68.183.174.225 "sqlite3 ~/kalshi-arb/data/bucket9-btc/trades.db 'SELECT * FROM trades ORDER BY opened_at DESC LIMIT 5;'"
+ssh root@68.183.174.225 "sqlite3 ~/kalshi-arb/data/ensemble-btc/trades.db 'SELECT * FROM trades ORDER BY opened_at DESC LIMIT 5;'"
+```
+
+**Check ensemble paper trades:**
+```bash
+ssh root@68.183.174.225 "sqlite3 ~/kalshi-arb/data/ensemble-btc/trades.db 'SELECT * FROM trades ORDER BY id DESC LIMIT 10;'"
+```
+
+---
+
+## 7. System Health 🛠️
+
+**Check all running bots:**
+```bash
+ssh root@68.183.174.225 "ps aux | grep -E 'kalshi-arb|continuous_learner' | grep -v grep"
+```
+
+**Check CPU/RAM:**
 ```bash
 ssh root@68.183.174.225 "htop"
 ```
 
-_(Press `q` to exit htop)_
+**Check dashboard ports:**
+```bash
+ssh root@68.183.174.225 "ss -tlnp | grep -E ':80|:8050|:8080|:8501'"
+```
+
+**Restart RL State Space Explorer (port 8080):**
+```bash
+ssh root@68.183.174.225 "cd ~/kalshi-arb && pkill -f 'http.server' ; nohup python3 -m http.server 8080 > /dev/null 2>&1 &"
+```
+
+**Restart Main Dashboard (port 8501):**
+```bash
+ssh root@68.183.174.225 "cd ~/kalshi-arb && pkill -f streamlit; nohup streamlit run monitoring/dashboard.py --server.address 0.0.0.0 --server.port 8501 > logs/dashboard.log 2>&1 &"
+```
 
 ---
 
-## 5. View Bucket 9 Data (Live) 📈
+## 8. Oracle Bot (Black-Scholes) ⚡
 
-See the exact prices the Bucket 9 bot is recording right now.
-
-**Check Latest BTC Data:**
-
+**Start all oracle bots:**
 ```bash
-ssh root@68.183.174.225 "tail -f ~/kalshi-arb/logs/bucket9-*.log"
+ssh root@68.183.174.225 "cd ~/kalshi-arb && for asset in btc eth sol xrp; do KALSHI_ASSET=\$asset PAPER_MODE=1 nohup ./target/release/kalshi-arb-oracle > logs/oracle-\$asset.log 2>&1 & done"
 ```
 
-### 11. Find the Exact File Currently Being Updated
-
-Run this to see the name of the active `.csv` file in the bucket 9 data folder:
-
+**Stop oracle bots:**
 ```bash
-ssh root@68.183.174.225 "ls -t ~/kalshi-arb/data/bucket9-btc/recordings/\$(date +%Y-%m-%d)/*.csv | head -n 1"
+ssh root@68.183.174.225 "pkill -f kalshi-arb-oracle"
 ```
 
-This auto-updates your terminal as new prices arrive for Bucket9 BTC!
+**Watch oracle logs:**
+```bash
+ssh root@68.183.174.225 "tail -f ~/kalshi-arb/logs/oracle-*.log"
+```
 
+---
+
+## 9. Bucket 9 Data Analysis 📊
+
+**Watch live Bucket 9 data:**
 ```bash
 ssh root@68.183.174.225 "ls -t ~/kalshi-arb/data/bucket9-btc/recordings/\$(date +%Y-%m-%d)/*.csv | head -n 1 | xargs tail -f"
 ```
 
-### 12. Analyze Bucket9 Opportunities Today
-
+**Analyze Bucket 9 opportunities:**
 ```bash
 ssh root@68.183.174.225 "python3 ~/kalshi-arb/analyze_bucket9.py"
 ```
-
-sh root@68.183.174.225 "ls -lt ~/kalshi-arb/data/bucket9-btc/recordings/2026-02-17/"
-
-ssh root@68.183.174.225 "tail -n 5 ~/kalshi-arb/data/bucket9-btc/recordings/2026-02-17/KXBTC15M-26FEB171715-15.csv"
-
-ssh root@68.183.174.225 'ls -t ~/kalshi-arb/data/bucket9-btc/recordings/$(date +%Y-%m-%d)/\*.csv | head -n 1 | xargs head -n 10'
-
-026-02-19
-No logs found for today.
-
-Total 'Perfect' Bucket 9 Opportunities Today: 0
-(base) tanushreenepal@Tanushrees-MacBook-Air kalshi-arb % mkdir -p data/bucket9-btc/recordings/$(date +%Y-%m-%d) && scp root@68.183.174.225:~/kalshi-arb/data/bucket9-btc/recordings/$(date +%Y-%m-%d)/\*.csv data/bucket9-btc/recordings/$(date +%Y-%m-%d)/ && python analyze_bucket9.py
-
-root@68.183.174.225's password:
-KXBTC15M-26FEB191515-15.csv 100% 85KB 449.9KB/s 00:00  
-Scanning logs in: /Users/tanushreenepal/Desktop/kalshi-arb/data/bucket9-btc/recordings/2026-02-19
-Found 109 matches in KXBTC15M-26FEB191515-15.csv!
-...
-
-Total 'Perfect' Bucket 9 Opportunities Today: 109
-(base) tanushreenepal@Tanushrees-MacBook-Air kalshi-arb %

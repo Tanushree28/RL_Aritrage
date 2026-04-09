@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kalshi RL State Space Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0d0f14;
+            --glass-bg: rgba(255, 255, 255, 0.05);
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --accent-primary: #3b82f6;
+            --accent-success: #10b981;
+            --accent-danger: #ef4444;
+            --accent-warning: #f59e0b;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --card-radius: 16px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(59, 130, 246, 0.05) 0%, transparent 20%),
+                radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.05) 0%, transparent 20%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        header {
+            margin-bottom: 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            background: linear-gradient(to right, #60a5fa, #34d399);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .status-badge {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            padding: 0.5rem 1rem;
+            border-radius: 99px;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-success);
+            box-shadow: 0 0 10px var(--accent-success);
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 350px;
+            gap: 2rem;
+        }
+
+        .glass-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--card-radius);
+            padding: 1.5rem;
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+
+        .glass-card:hover { border-color: rgba(255, 255, 255, 0.15); }
+
+        .controls {
+            display: flex;
+            gap: 1.5rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .control-group label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            letter-spacing: 0.05em;
+        }
+
+        select, button {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid var(--glass-border);
+            color: white;
+            padding: 0.6rem 1rem;
+            border-radius: 8px;
+            font-family: inherit;
+            cursor: pointer;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        select:hover, button:hover {
+            background: rgba(255, 255, 255, 0.12);
+            border-color: var(--glass-border);
+        }
+
+        .heatmap-container {
+            overflow-x: auto;
+            position: relative;
+        }
+
+        #heatmap {
+            display: grid;
+            grid-template-columns: 60px repeat(11, 1fr);  /* 1 label + 11 time buckets (0-10) */
+            gap: 4px;
+            min-width: 800px;
+        }
+
+        .heatmap-cell {
+            aspect-ratio: 1;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            cursor: pointer;
+            transition: all 0.1s ease;
+            position: relative;
+            background: #1a1e26;
+        }
+
+        .heatmap-cell:hover {
+            transform: scale(1.1);
+            z-index: 10;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+
+        .heatmap-cell.action-hold { background: rgba(148, 163, 184, 0.1); color: var(--text-secondary); }
+        .heatmap-cell.action-yes { background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.4); color: var(--accent-success); }
+        .heatmap-cell.action-no { background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); color: var(--accent-danger); }
+        .heatmap-cell.unexplored { background: #14171d; opacity: 0.3; }
+
+        .axis-label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .x-axis-title, .y-axis-title {
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            font-weight: 600;
+            margin: 1rem 0;
+        }
+
+        .y-axis-title {
+            writing-mode: vertical-rl;
+            grid-row: 1 / span 7;
+            align-self: center;
+        }
+
+        .side-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .stat-grid {
+            grid-template-columns: 1fr 1fr;
+            display: grid;
+            gap: 1rem;
+        }
+
+        .stat-box {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--glass-border);
+            padding: 1rem;
+            border-radius: 12px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: var(--accent-primary);
+        }
+
+        .stat-label {
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            margin-top: 0.2rem;
+        }
+
+        #inspector {
+            display: none;
+        }
+
+        .inspector-title {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .q-value-bar {
+            margin-bottom: 0.8rem;
+        }
+
+        .q-bar-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            margin-bottom: 0.3rem;
+        }
+
+        .q-bar-bg {
+            height: 8px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .q-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s ease; }
+        .q-fill-hold { background: var(--text-secondary); }
+        .q-fill-yes { background: var(--accent-success); }
+        .q-fill-no { background: var(--accent-danger); }
+
+        pre {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            background: rgba(0,0,0,0.2);
+            padding: 0.8rem;
+            border-radius: 8px;
+            margin-top: 1rem;
+            overflow-x: auto;
+        }
+
+        /* Tooltip style */
+        .tooltip {
+            position: absolute;
+            background: #1e293b;
+            color: white;
+            padding: 0.5rem 0.8rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            pointer-events: none;
+            z-index: 100;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+            border: 1px solid var(--glass-border);
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .legend {
+            display: flex;
+            gap: 1.5rem;
+            margin-top: 1.5rem;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            justify-content: center;
+        }
+
+        .legend-item { display: flex; align-items: center; gap: 0.5rem; }
+        .legend-color { width: 12px; height: 12px; border-radius: 2px; }
+
+        .top-state-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0.6rem;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.15s ease;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+        .top-state-row:hover { background: rgba(255,255,255,0.06); }
+        .top-state-desc { color: var(--text-secondary); flex: 1; }
+        .top-state-action {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            font-size: 0.7rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
+            margin-left: 0.5rem;
+            white-space: nowrap;
+        }
+        .top-state-action.yes { color: var(--accent-success); background: rgba(16, 185, 129, 0.15); }
+        .top-state-action.no { color: var(--accent-danger); background: rgba(239, 68, 68, 0.15); }
+        .top-state-action.hold { color: var(--text-secondary); background: rgba(148, 163, 184, 0.1); }
+        .top-state-q {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            color: var(--accent-primary);
+            margin-left: 0.5rem;
+            min-width: 45px;
+            text-align: right;
+        }
+
+        .asset-tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .asset-tab {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--glass-border);
+            color: var(--text-secondary);
+            padding: 0.5rem 1.2rem;
+            border-radius: 99px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .asset-tab:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+        }
+
+        .asset-tab.active {
+            background: rgba(59, 130, 246, 0.2);
+            border-color: var(--accent-primary);
+            color: var(--accent-primary);
+            box-shadow: 0 0 12px rgba(59, 130, 246, 0.15);
+        }
+
+        .asset-tab.upload-tab {
+            border-style: dashed;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .drag-drop-zone {
+            border: 2px dashed var(--glass-border);
+            border-radius: 16px;
+            padding: 3rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 2rem;
+        }
+
+        .drag-drop-zone:hover {
+            border-color: var(--accent-primary);
+            background: rgba(59, 130, 246, 0.05);
+        }
+
+        .hidden { display: none !important; }
+
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: rgba(255, 255, 255, 0.03); }
+        ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>RL State Space Explorer</h1>
+                <p style="color: var(--text-secondary); font-size: 0.9rem;">Visualizing Kalshi Arbitrage Bot Policy</p>
+            </div>
+            <div class="status-badge">
+                <div class="status-dot"></div>
+                <span id="model-status">Awaiting Data...</span>
+            </div>
+        </header>
+
+        <div id="asset-tabs" class="asset-tabs hidden">
+            <button class="asset-tab" data-asset="btc" onclick="loadAsset('btc')">BTC</button>
+            <button class="asset-tab" data-asset="eth" onclick="loadAsset('eth')">ETH</button>
+            <button class="asset-tab" data-asset="sol" onclick="loadAsset('sol')">SOL</button>
+            <button class="asset-tab" data-asset="xrp" onclick="loadAsset('xrp')">XRP</button>
+            <button class="asset-tab" data-asset="universal" onclick="loadAsset('universal')">Universal</button>
+            <button class="asset-tab" data-asset="optimal-btc" onclick="loadAsset('optimal-btc')" title="Frozen optimal policy — standalone, no ensemble">Optimal ★</button>
+            <button class="asset-tab upload-tab" onclick="showUpload()">Upload Custom</button>
+        </div>
+
+        <div id="setup-view" class="drag-drop-zone">
+            <svg style="width: 48px; height: 48px; margin-bottom: 1rem; color: var(--text-secondary);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            </svg>
+            <h3>Upload Data</h3>
+            <p style="color: var(--text-secondary); margin-top: 0.5rem;">Drag and drop <code>rl_policy.json</code> to begin</p>
+            <input type="file" id="file-input" class="hidden">
+            <button onclick="document.getElementById('file-input').click()" style="margin-top: 1.5rem;">Select File</button>
+        </div>
+
+        <main id="dashboard-view" class="dashboard-grid hidden">
+            <div class="main-content">
+                <div class="glass-card">
+                    <div class="controls">
+                        <div class="control-group">
+                            <label>Direction</label>
+                            <select id="filter-direction" onchange="updateHeatmap()">
+                                <option value="1">Above Strike</option>
+                                <option value="0">Below Strike</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label>Price Bucket</label>
+                            <select id="filter-price" onchange="updateHeatmap()">
+                                <option value="0">$0.00 - $0.10</option>
+                                <option value="1">$0.10 - $0.20</option>
+                                <option value="2" selected>$0.20 - $0.30</option>
+                                <option value="3">$0.30 - $0.40</option>
+                                <option value="4">$0.40 - $0.50</option>
+                                <option value="5">$0.50 - $0.60</option>
+                                <option value="6">$0.60 - $0.70</option>
+                                <option value="7">$0.70 - $0.80</option>
+                                <option value="8">$0.80 - $0.90</option>
+                                <option value="9">$0.90 - $1.00</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label>Momentum</label>
+                            <select id="filter-momentum" onchange="updateHeatmap()">
+                                <option value="2">Upward</option>
+                                <option value="1" selected>Neutral</option>
+                                <option value="0">Downward</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label>Spread</label>
+                            <select id="filter-spread" onchange="updateHeatmap()">
+                                <option value="0" selected>Tight (Liquid)</option>
+                                <option value="1">Wide (Illiquid)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="x-axis-title">Time Remaining (Seconds)</div>
+                    <div class="heatmap-container">
+                        <div id="heatmap">
+                            <!-- JS will populate -->
+                        </div>
+                    </div>
+                    
+                    <div class="legend">
+                        <div class="legend-item"><div class="legend-color action-hold"></div> HOLD (Action 0)</div>
+                        <div class="legend-item"><div class="legend-color action-yes"></div> BUY YES (Action 1)</div>
+                        <div class="legend-item"><div class="legend-color action-no"></div> BUY NO (Action 2)</div>
+                        <div class="legend-item"><div class="legend-color unexplored"></div> Unexplored</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="side-panel">
+                <div class="glass-card">
+                    <h3 style="margin-bottom: 1.2rem; font-size: 1rem; border-bottom: 1px solid var(--glass-border); padding-bottom: 0.5rem;">Model Stats</h3>
+                    <div class="stat-grid">
+                        <div class="stat-box">
+                            <div class="stat-value" id="stat-states">0</div>
+                            <div class="stat-label">Explored States</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value" id="stat-coverage">0%</div>
+                            <div class="stat-label">Coverage</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value" id="stat-time">--:--</div>
+                            <div class="stat-label">Last Updated</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-value" id="stat-max-q">0.0</div>
+                            <div class="stat-label">Max Q-Value</div>
+                        </div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; margin-top: 0.8rem;">
+                        <div class="stat-box" style="padding: 0.6rem;">
+                            <div class="stat-value" style="color: var(--accent-success); font-size: 1rem;" id="stat-yes-count">0</div>
+                            <div class="stat-label">BUY YES</div>
+                        </div>
+                        <div class="stat-box" style="padding: 0.6rem;">
+                            <div class="stat-value" style="color: var(--accent-danger); font-size: 1rem;" id="stat-no-count">0</div>
+                            <div class="stat-label">BUY NO</div>
+                        </div>
+                        <div class="stat-box" style="padding: 0.6rem;">
+                            <div class="stat-value" style="color: var(--text-secondary); font-size: 1rem;" id="stat-hold-count">0</div>
+                            <div class="stat-label">HOLD</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="glass-card" id="inspector-card">
+                    <div id="inspector-empty" style="text-align: center; color: var(--text-secondary); padding: 2rem 0;">
+                        <p>Click a heatmap cell to inspect Q-values</p>
+                    </div>
+                    <div id="inspector">
+                        <div class="inspector-title">
+                            <span id="inspect-coords">State Details</span>
+                        </div>
+                        <div class="q-value-bar">
+                            <div class="q-bar-header"><span>HOLD</span><span id="q-val-0">0.00</span></div>
+                            <div class="q-bar-bg"><div id="q-bar-0" class="q-bar-fill q-fill-hold" style="width: 0%"></div></div>
+                        </div>
+                        <div class="q-value-bar">
+                            <div class="q-bar-header"><span>BUY YES</span><span id="q-val-1">0.00</span></div>
+                            <div class="q-bar-bg"><div id="q-bar-1" class="q-bar-fill q-fill-yes" style="width: 0%"></div></div>
+                        </div>
+                        <div class="q-value-bar">
+                            <div class="q-bar-header"><span>BUY NO</span><span id="q-val-2">0.00</span></div>
+                            <div class="q-bar-bg"><div id="q-bar-2" class="q-bar-fill q-fill-no" style="width: 0%"></div></div>
+                        </div>
+                        <pre id="inspect-json">{}</pre>
+                    </div>
+                </div>
+
+                <div class="glass-card">
+                    <h3 style="margin-bottom: 1rem; font-size: 1rem; border-bottom: 1px solid var(--glass-border); padding-bottom: 0.5rem;">Top Confident States</h3>
+                    <div id="top-states" style="font-size: 0.75rem; max-height: 400px; overflow-y: auto;">
+                        <p style="color: var(--text-secondary);">Loading...</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="tooltip" id="tooltip"></div>
+
+    <script>
+        let policyData = null;
+        let qTable = {};
+        let currentAsset = null;
+        // Uniform 30-second buckets matching rl_strategy.py
+        const TIME_BUCKETS = [30, 60, 90, 120, 150, 180, 210, 240, 270, 300];
+        const DISTANCE_BUCKETS = [0.1, 0.2, 0.3, 0.4, 0.5];
+        const ACTION_NAMES = ["HOLD", "BUY YES", "BUY NO"];
+        const ASSETS = ['btc', 'eth', 'sol', 'xrp', 'universal'];
+
+        // UI Elements
+        const setupView = document.getElementById('setup-view');
+        const dashboardView = document.getElementById('dashboard-view');
+        const assetTabs = document.getElementById('asset-tabs');
+        const fileInput = document.getElementById('file-input');
+        const heatmap = document.getElementById('heatmap');
+        const tooltip = document.getElementById('tooltip');
+
+        // File handling
+        setupView.addEventListener('dragover', (e) => { e.preventDefault(); setupView.style.borderColor = '#3b82f6'; });
+        setupView.addEventListener('dragleave', () => { setupView.style.borderColor = 'rgba(255,255,255,0.1)'; });
+        setupView.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const file = e.dataTransfer.files[0];
+            if (file) handleFile(file);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) handleFile(file);
+        });
+
+        function handleFile(file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    currentAsset = 'custom';
+                    processPolicy(data);
+                } catch (err) {
+                    alert("Error parsing JSON: " + err.message);
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function showUpload() {
+            document.getElementById('file-input').click();
+        }
+
+        async function loadAsset(asset) {
+            const path = asset === 'universal'
+                ? 'model/universal/rl_policy_universal.json'
+                : `model/${asset}/rl_policy.json`;  // works for btc, eth, sol, xrp, optimal-btc
+            try {
+                const response = await fetch(path);
+                if (response.ok) {
+                    const data = await response.json();
+                    currentAsset = asset;
+                    processPolicy(data);
+                } else {
+                    alert(`Could not load ${asset} policy (${path})`);
+                }
+            } catch (e) {
+                alert(`Error loading ${asset} policy: ${e.message}`);
+            }
+        }
+
+        function updateAssetTabs() {
+            document.querySelectorAll('.asset-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.asset === currentAsset);
+            });
+        }
+
+        // Try auto-loading BTC on startup
+        async function tryAutoLoad() {
+            try {
+                const response = await fetch('model/btc/rl_policy.json');
+                if (response.ok) {
+                    const data = await response.json();
+                    currentAsset = 'btc';
+                    processPolicy(data);
+                }
+            } catch (e) {
+                console.log("Could not auto-load policy");
+            }
+        }
+        tryAutoLoad();
+
+        function processPolicy(data) {
+            policyData = data;
+            qTable = data.q_table;
+
+            // Detect state dimensionality from first key
+            const firstKey = Object.keys(qTable)[0];
+            const dims = firstKey ? firstKey.split(',').length : 6;
+            document.is5D = (dims === 5);
+
+            if (document.is5D) {
+                document.getElementById('filter-spread').parentElement.classList.add('hidden');
+                document.getElementById('filter-momentum').parentElement.style.marginLeft = '0';
+            } else {
+                document.getElementById('filter-spread').parentElement.classList.remove('hidden');
+            }
+
+            setupView.classList.add('hidden');
+            dashboardView.classList.remove('hidden');
+            assetTabs.classList.remove('hidden');
+
+            const assetLabel = currentAsset ? currentAsset.toUpperCase() : 'Custom';
+            document.getElementById('model-status').innerText = `${assetLabel} Policy (${dims}D)`;
+
+            updateAssetTabs();
+            updateStats();
+            updateTopStates();
+            updateHeatmap();
+        }
+
+        function updateStats() {
+            const states = Object.keys(qTable);
+            document.getElementById('stat-states').innerText = states.length;
+            
+            // Theoretical max: 6 dist * 11 time * 10 price * 2 dir * 3 mom = 3960
+            const dims = Object.keys(qTable)[0]?.split(',').length || 5;
+            const totalPossible = (dims === 5) ? 3960 : 7920;
+            const coverage = (states.length / totalPossible * 100).toFixed(1);
+            document.getElementById('stat-coverage').innerText = coverage + '%';
+            
+            const date = new Date((policyData.timestamp || Date.now()/1000) * 1000);
+            document.getElementById('stat-time').innerText = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            
+            let maxQ = 0;
+            let maxQState = '';
+            let maxQAction = 0;
+            for (let k in qTable) {
+                const vals = qTable[k];
+                const max = Math.max(...vals);
+                if (max > maxQ) {
+                    maxQ = max;
+                    maxQState = k;
+                    maxQAction = vals.indexOf(max);
+                }
+            }
+            const maxQEl = document.getElementById('stat-max-q');
+            maxQEl.innerText = maxQ.toFixed(2);
+            maxQEl.title = `State: [${maxQState}]\nAction: ${ACTION_NAMES[maxQAction]}`;
+
+            // Action distribution
+            let actionCounts = [0, 0, 0]; // HOLD, YES, NO
+            for (let k in qTable) {
+                const vals = qTable[k];
+                const best = vals.indexOf(Math.max(...vals));
+                actionCounts[best]++;
+            }
+            document.getElementById('stat-yes-count').innerText = actionCounts[1];
+            document.getElementById('stat-no-count').innerText = actionCounts[2];
+            document.getElementById('stat-hold-count').innerText = actionCounts[0];
+        }
+
+        function updateTopStates() {
+            const container = document.getElementById('top-states');
+            container.innerHTML = '';
+
+            const DIRS = ['Below', 'Above'];
+            const MOMS = ['Down', 'Neutral', 'Up'];
+            const actionClasses = ['hold', 'yes', 'no'];
+
+            // Rank states by max Q-value magnitude (most confident)
+            const ranked = [];
+            for (let k in qTable) {
+                const vals = qTable[k];
+                const best = vals.indexOf(Math.max(...vals));
+                const maxQ = Math.max(...vals);
+                if (maxQ > 0.5) { // Only show states with meaningful Q-values
+                    ranked.push({ key: k, bestAction: best, qVal: maxQ, vals: vals });
+                }
+            }
+            ranked.sort((a, b) => b.qVal - a.qVal);
+
+            const top = ranked.slice(0, 15);
+            if (top.length === 0) {
+                container.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 1rem;">No confident states found</p>';
+                return;
+            }
+
+            top.forEach((item, i) => {
+                const parts = item.key.split(',').map(Number);
+                const [d, t, p, dir, mom] = document.is5D ? parts : [parts[0], parts[1], parts[2], parts[3], parts[5]];
+
+                const distLabel = d < 5 ? (DISTANCE_BUCKETS[d] + '%') : '>0.5%';
+                const timeLabel = t === 0 ? '>300s' : (TIME_BUCKETS[t-1] || '30') + 's';
+                const priceLabel = '$' + (p * 0.1).toFixed(1) + '-' + ((p+1) * 0.1).toFixed(1);
+
+                const row = document.createElement('div');
+                row.className = 'top-state-row';
+                row.innerHTML = `
+                    <span style="color: var(--text-secondary); opacity: 0.5; width: 18px;">${i+1}</span>
+                    <span class="top-state-desc">${distLabel} ${timeLabel} ${priceLabel} ${DIRS[dir]} ${MOMS[mom]}</span>
+                    <span class="top-state-action ${actionClasses[item.bestAction]}">${ACTION_NAMES[item.bestAction]}</span>
+                    <span class="top-state-q">$${item.qVal.toFixed(1)}</span>
+                `;
+
+                // Click to navigate heatmap to this state's filters
+                row.onclick = () => {
+                    document.getElementById('filter-direction').value = dir;
+                    document.getElementById('filter-price').value = p;
+                    document.getElementById('filter-momentum').value = mom;
+                    updateHeatmap();
+                    // Flash the row
+                    row.style.background = 'rgba(59, 130, 246, 0.2)';
+                    setTimeout(() => row.style.background = '', 500);
+                };
+
+                container.appendChild(row);
+            });
+        }
+
+        function updateHeatmap() {
+            const direction = document.getElementById('filter-direction').value;
+            const price = document.getElementById('filter-price').value;
+            const momentum = document.getElementById('filter-momentum').value;
+            const spread = document.getElementById('filter-spread').value;
+
+            heatmap.innerHTML = '';
+            
+            const timeCount = 11; // 0-10 for uniform 30s buckets
+
+            // Column Headers (Time): bucket 0 = >300s, bucket 10 = <30s
+            heatmap.appendChild(createLabel('Dist %'));
+            for (let t = 0; t < timeCount; t++) {
+                const label = t === 0 ? '>300s' : `${TIME_BUCKETS[t-1]}s`;
+                heatmap.appendChild(createLabel(label));
+            }
+
+            // Rows (Distance)
+            for (let d = 0; d <= 5; d++) {
+                // Distance Label
+                const dLabel = d < 5 ? (DISTANCE_BUCKETS[d] + '%') : '>0.5%';
+                heatmap.appendChild(createLabel(dLabel));
+
+                for (let t = 0; t < timeCount; t++) {
+                    let key;
+                    if (document.is5D) {
+                        key = `${d},${t},${price},${direction},${momentum}`;
+                    } else {
+                        key = `${d},${t},${price},${direction},${spread},${momentum}`;
+                    }
+                    
+                    const qVals = qTable[key];
+                    
+                    const cell = document.createElement('div');
+                    cell.className = 'heatmap-cell';
+                    
+                    if (qVals) {
+                        const bestAction = qVals.indexOf(Math.max(...qVals));
+                        const actionClass = ['action-hold', 'action-yes', 'action-no'][bestAction];
+                        cell.classList.add(actionClass);
+                        const maxQ = Math.max(...qVals);
+                        cell.innerText = maxQ > 0.1 ? maxQ.toFixed(1) : (maxQ < -0.1 ? maxQ.toFixed(0) : '');
+                        
+                        cell.onclick = () => inspectState(key, d, t, price, direction, spread, momentum, qVals);
+                        
+                        cell.onmouseover = (e) => showTooltip(e, `Dist: ${dLabel}, Time: ${TIME_BUCKETS[t]||'300+'}s<br>Action: ${ACTION_NAMES[bestAction]}<br>Q: [${qVals.map(v => v.toFixed(2)).join(', ')}]`);
+                        cell.onmouseout = hideTooltip;
+                    } else {
+                        cell.classList.add('unexplored');
+                    }
+                    
+                    heatmap.appendChild(cell);
+                }
+            }
+        }
+
+        function createLabel(text) {
+            const div = document.createElement('div');
+            div.className = 'axis-label';
+            div.innerText = text;
+            return div;
+        }
+
+        function inspectState(key, d, t, p, dir, spr, mom, qVals) {
+            document.getElementById('inspector-empty').classList.add('hidden');
+            document.getElementById('inspector').style.display = 'block';
+            
+            document.getElementById('inspect-coords').innerText = `State: [d=${d}, t=${t}, p=${p}, dir=${dir}, sp=${spr}, m=${mom}]`;
+            
+            const max = Math.max(...qVals, 1.0); // Normalize to at least 1.0
+            
+            for (let i = 0; i < 3; i++) {
+                const val = qVals[i];
+                document.getElementById(`q-val-${i}`).innerText = val.toFixed(3);
+                const pct = Math.max(0, (val / max) * 100);
+                document.getElementById(`q-bar-${i}`).style.width = pct + '%';
+            }
+            
+            document.getElementById('inspect-json').innerText = JSON.stringify({
+                state_tuple: [d, t, p, parseInt(dir), parseInt(spr), parseInt(mom)],
+                q_values: qVals,
+                best_action: qVals.indexOf(Math.max(...qVals))
+            }, null, 2);
+        }
+
+        function showTooltip(e, content) {
+            tooltip.innerHTML = content;
+            tooltip.style.opacity = '1';
+            tooltip.style.left = (e.pageX + 15) + 'px';
+            tooltip.style.top = (e.pageY + 15) + 'px';
+        }
+
+        function hideTooltip() {
+            tooltip.style.opacity = '0';
+        }
+    </script>
+</body>
+</html>
